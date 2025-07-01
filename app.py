@@ -179,6 +179,11 @@ app = Flask(__name__)
 
 @app.route('/')
 def index():
+  return 'index'
+  
+
+@app.route('/fire/')
+def fire():
 
   #--------------------------------------------------------------------------------
   portfolio_cnt = 0
@@ -229,10 +234,10 @@ def index():
   if (day > 4) or ((mins > timestamp[2] + 2) and
                    (mins < timestamp[3] - 15 - 2)):
     leisure_time = True
-    portfolio_reload = 360 / query_interval  # 72 x 5m = 6h
+    portfolio_reload = 360 / query_interval  # 6H
   else:
     leisure_time = False
-    portfolio_reload = 120 / query_interval  # 24 x 5m = 2h
+    portfolio_reload = 120 / query_interval  # 2H
 
   # Reset portolio to trigee full report @13:32 and @21:28 (TW stock close, and before US open)
   if (mins == (timestamp[2] + 2)) or (mins == (timestamp[3] - 2)):
