@@ -222,8 +222,7 @@ def index():
         portfolio_cnt = 0
         portfolio.clear()
 
-  if (mins > (timestamp[0] + 1)) and (mins < (timestamp[1] -
-                                              1)):  # 00:30 (30) ~ 07:30 (450)
+  if (mins > (timestamp[0] + 1)) and (mins < (timestamp[1] - 1)):  # 00:30 (30) ~ 07:30 (450)
     return f'portfolio_cnt = {portfolio_cnt} (sleep)'
 
   # For leisure hours, reduce report frequency (weekend, 13:30 (810) ~ 21:30 (1290))
