@@ -246,7 +246,7 @@ def index():
 
   timestamp_msg = datetime.strftime(now, '%H:%M:%S')
   msg_toast = []
-  msg_toast.append(timestamp_msg + f' - Replit (cnt={portfolio_cnt})')
+  msg_toast.append(timestamp_msg + f' - Render (cnt={portfolio_cnt})')
   print(msg_toast[0])
 
   # Reload portfolio every 60 runs
