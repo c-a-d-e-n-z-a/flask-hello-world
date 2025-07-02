@@ -140,33 +140,12 @@ def ma_calculation(ticker, session, use_adj=True):
 
 
 ################################################################################################################################################################
-def get_fitx_histock():
-  headers_fitx = {
-      'authority': 'histock.tw',
-      'accept': 'text/plain, */*; q=0.01',
-      'accept-language': 'zh-TW,zh-CN;q=0.9,zh;q=0.8,en-US;q=0.7,en;q=0.6',
-      'content-type': 'application/x-www-form-urlencoded; charset=UTF-8',
-      'origin': 'https://histock.tw',
-      'referer': 'https://histock.tw/index-tw/FITX',
-      'sec-ch-ua':
-      '"Chromium";v="110", "Not A(Brand";v="24", "Google Chrome";v="110"',
-      'sec-ch-ua-mobile': '?0',
-      'sec-ch-ua-platform': '"Windows"',
-      'sec-fetch-dest': 'empty',
-      'sec-fetch-mode': 'cors',
-      'sec-fetch-site': 'same-origin',
-      'user-agent':
-      'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/110.0.0.0 Safari/537.36',
-      'x-requested-with': 'XMLHttpRequest',
-  }
+def get_fitx_histock(session):
 
-  r = requests.get(
-      'https://histock.tw/stock/module/function.aspx?m=stocktop2017&no=FITX',
-      headers=headers_fitx,
-      timeout=5)
-
+  r = session.get('https://histock.tw/stock/module/function.aspx?m=stocktop2017&no=FITX')
+  
   quote = '台指期 []'
-
+  
   if r.status_code == 200:
     r.encoding = 'utf-8'
     resp = r.text
@@ -178,16 +157,12 @@ def get_fitx_histock():
         b = item.rfind('>')
         if b > 0:
           #print(item[b+1:])
-          values.append(item[b + 1:].strip())
+          values.append(item[b+1:].strip())
 
       quote = f'台指期 [{values[1]} {values[2]}]: {values[0]} ({values[6]})'
 
-    del resp
-    del items
-
   print(quote)
   return quote
-
 
 
 
@@ -370,6 +345,9 @@ def fire():
       macd_w_is_fall = r.json()
       print("\nMACD Hist (W) fall check")
       print(macd_w_is_fall)
+
+    msg_toast.append(get_fitx_histock(session))
+
 
   #--------------------------------------------------------------------------------
   # Start get stock quotes
