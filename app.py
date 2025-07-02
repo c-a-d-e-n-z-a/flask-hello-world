@@ -217,8 +217,7 @@ def reset():
 
 ################################################################################################################################################################
 @app.route('/fire/')
-def fire():
-
+def fire(): 
   #--------------------------------------------------------------------------------
   portfolio_cnt = 0
   portfolio_reload = 24
@@ -368,7 +367,7 @@ def fire():
   sdp_base_tw = sdp_base_us = sdp_base = None
 
   for c in range(0, len(portfolio), chunk_len):
-
+   
     # Only can query 3 tickers at a time.
     chunk = portfolio[c:c + chunk_len]
     tickers = [p[IDX_T] for p in chunk]
@@ -404,7 +403,9 @@ def fire():
 
         # Symbols could be received in out-of-order, need match index
         for i in range(0, len(tickers)):
-          #print(f'{i} {c} {i+c} {x} {s} {portfolio[i+c][0]}')
+          print("!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!")
+          print(f'{i} {c} {i+c} {x} {s} {portfolio[i+c][0]} {IDX_200MA} {IDX_P}')
+          print(portfolio[i+c])
 
           if s != portfolio[i + c][IDX_T]:
             continue  # Check symobol name match
