@@ -191,11 +191,14 @@ def reset():
 
   if os.path.exists(json_file_path):
     with open(json_file_path, "r") as f:
-      portfolio = json.load(f)
-      print(f"Loaded data - portfolio:\n{portfolio}")
+      try:
+        portfolio = json.load(f)
+        print(f"Loaded data - portfolio:\n{portfolio}")
+      except json.JSONDecodeError as e:
+        print(f"Error decoding JSON: {e}")
 
   with open(json_file_path, "w") as f:
-    portfolio.clear()
+    portfolio = [["2454.TW", 820, 1200], ["2330.TW", 1000, 1200]]
     json.dump(portfolio, f, indent=2)
 
   with open(pcnt_file_path, "wb") as f:
@@ -263,11 +266,17 @@ def fire():
         portfolio_cnt = 0
 
   if os.path.exists(json_file_path):
-    with open(json_file_path, "r") as f:
-      portfolio = json.load(f)
-      print('--------------------------------------------------------------------------------')
-      print(f"Loaded data - portfolio:\n{portfolio}")
-      print('--------------------------------------------------------------------------------')
+    with open(json_file_path, "r") as f:      
+      try:
+        portfolio = json.load(f)
+        print('--------------------------------------------------------------------------------')
+        print(f"Loaded data - portfolio:\n{portfolio}")
+        print('--------------------------------------------------------------------------------')
+      except json.JSONDecodeError as e:
+        print(f"Error decoding JSON: {e}")
+      finally:
+        portfolio = [["2454.TW", 820, 1200], ["2330.TW", 1000, 1200]]
+
       if len(portfolio) == 0:
         portfolio_cnt = 0
         portfolio.clear()
