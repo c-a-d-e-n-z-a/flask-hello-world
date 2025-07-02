@@ -444,7 +444,7 @@ def fire():
           try:
             if portfolio[i + c][IDX_200MA] != None:
               sdp_radio += f" {((price-portfolio[i+c][IDX_200MA])/portfolio[i+c][IDX_200MA])*100  :.1f}%"
-          except e:
+          except Exception as e:
             print(portfolio[i + c])
 
           msg = ''
