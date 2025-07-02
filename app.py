@@ -7,14 +7,10 @@ import time
 from datetime import date, datetime, timedelta
 from zoneinfo import ZoneInfo
 
-#import requests
+import requests
 from curl_cffi import requests
 from flask import Flask
 
-
-
-
-################################################################################################################################################################
 #--------------------------------------------------------------------------------
 # Telegarm info
 bot_token = os.environ.get('BOT_TOKEN')
@@ -23,12 +19,6 @@ chat_id = os.environ.get('CHAT_ID')
 # Json url
 url_git_json = os.environ.get('URL_GIT_JSON')
 macd_git_json = os.environ.get('MACD_GIT_JSON')
-
-#if os.environ.get('COMPUTERNAME') == 'NB24110112':
-#  tg_limited = True
-#else:
-#  tg_limited = False
-tg_limited = False
 
 # Query internal in minutes
 query_interval = 2
@@ -60,23 +50,15 @@ DELTA_I_U = 0.00618  # delta up for index
 DELTA_I_D = -0.00618  # delta down for index
 DELTA_I_A = 0.00382  # delta abs for index
 
-#--------------------------------------------------------------------------------
 user_agent = 'Mozilla/5.0 (Macintosh; Intel Mac OS X 10_10_1) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/133.0.0.0 Safari/537.36'
 headers = {"User-Agent": user_agent}
 
-#--------------------------------------------------------------------------------
 p_u = '\U0001F534'  # price mark 🔴
 p_d = '\U0001F7E2'  # price mark 🟢
 a_u = '\U00002191'  # arrow mark ↑
 a_d = '\U00002193'  # arrow mark ↓
 l_c_u = '\U0000274C'  # MA cross upwards mark ❌
 l_c_d = '\U0000274E'  # MA corss downwards mark ❎
-
-#--------------------------------------------------------------------------------
-json_file_path = "data.json"
-pcnt_file_path = "pcnt.pkl"
-
-
 
 
 ################################################################################################################################################################
@@ -93,6 +75,8 @@ def ma_calculation(ticker, session, use_adj=True):
       datetime.combine(endDate,
                        datetime.now().time()).timestamp())
 
+  #crumb = get_yahoo_crumb(session, ticker)
+  #crumb = "r7Y\u002FA17rsX3"
   crumb = "dx7e5yMCafJ"
   url_history = f"https://query1.finance.yahoo.com/v8/finance/chart/{ticker[0]}?period1={startDate_epoch}&period2={endDate_epoch}&interval=1d&events=history&includeAdjustedClose=true&events=div%2Csplits&crumb={crumb}"
   #print('  url=' + url_history)
@@ -104,9 +88,11 @@ def ma_calculation(ticker, session, use_adj=True):
     json_history = r.json()
 
     if use_adj == True:
-      close = json_history["chart"]["result"][0]["indicators"]["adjclose"][0]["adjclose"]
+      close = json_history["chart"]["result"][0]["indicators"]["adjclose"][0][
+          "adjclose"]
     else:
-      close = json_history["chart"]["result"][0]["indicators"]["quote"][0]["close"]
+      close = json_history["chart"]["result"][0]["indicators"]["quote"][0][
+          "close"]
 
     # Avoid nonetype calcuation
     if None in close:
@@ -137,15 +123,34 @@ def ma_calculation(ticker, session, use_adj=True):
     return [None, None, None, None, None, None, None, None, None]
 
 
-
-
 ################################################################################################################################################################
-def get_fitx_histock(session):
+def get_fitx_histock():
+  headers_fitx = {
+      'authority': 'histock.tw',
+      'accept': 'text/plain, */*; q=0.01',
+      'accept-language': 'zh-TW,zh-CN;q=0.9,zh;q=0.8,en-US;q=0.7,en;q=0.6',
+      'content-type': 'application/x-www-form-urlencoded; charset=UTF-8',
+      'origin': 'https://histock.tw',
+      'referer': 'https://histock.tw/index-tw/FITX',
+      'sec-ch-ua':
+      '"Chromium";v="110", "Not A(Brand";v="24", "Google Chrome";v="110"',
+      'sec-ch-ua-mobile': '?0',
+      'sec-ch-ua-platform': '"Windows"',
+      'sec-fetch-dest': 'empty',
+      'sec-fetch-mode': 'cors',
+      'sec-fetch-site': 'same-origin',
+      'user-agent':
+      'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/110.0.0.0 Safari/537.36',
+      'x-requested-with': 'XMLHttpRequest',
+  }
 
-  r = session.get('https://histock.tw/stock/module/function.aspx?m=stocktop2017&no=FITX')
-  
+  r = requests.get(
+      'https://histock.tw/stock/module/function.aspx?m=stocktop2017&no=FITX',
+      headers=headers_fitx,
+      timeout=5)
+
   quote = '台指期 []'
-  
+
   if r.status_code == 200:
     r.encoding = 'utf-8'
     resp = r.text
@@ -157,67 +162,29 @@ def get_fitx_histock(session):
         b = item.rfind('>')
         if b > 0:
           #print(item[b+1:])
-          values.append(item[b+1:].strip())
+          values.append(item[b + 1:].strip())
 
       quote = f'台指期 [{values[1]} {values[2]}]: {values[0]} ({values[6]})'
 
+    del resp
+    del items
+
   print(quote)
   return quote
-
 
 
 ################################################################################################################################################################
 app = Flask(__name__)
 
 
-
-
-################################################################################################################################################################
 @app.route('/')
 def index():
   return 'index'
+  
 
-
-
-
-################################################################################################################################################################
-@app.route('/reset/')
-def reset():
-  print('--------------------------------------------------------------------------------')
-  if os.path.exists(pcnt_file_path):
-    with open(pcnt_file_path, "rb") as f:
-      portfolio_cnt = pickle.load(f)
-      print(f"Loaded data - counter:{portfolio_cnt}")
-
-  if os.path.exists(json_file_path):
-    with open(json_file_path, "r") as f:
-      try:
-        portfolio = json.load(f)
-        print(f"Loaded data - portfolio:\n{portfolio}")
-      except json.JSONDecodeError as e:
-        print(f"Error decoding JSON: {e}")
-
-  with open(json_file_path, "w") as f:
-    portfolio = [["2454.TW", 820, 1200], ["2330.TW", 1000, 1200]]
-    json.dump(portfolio, f, indent=2)
-
-  with open(pcnt_file_path, "wb") as f:
-    portfolio_cnt = 0
-    pickle.dump(portfolio_cnt, f)
-
-  print("\nReset portofolio - 0")
-  print('--------------------------------------------------------------------------------')
-
-  return 'reset'
-
-  gc.collect()
-
-
-
-
-################################################################################################################################################################
 @app.route('/fire/')
-def fire(): 
+def fire():
+
   #--------------------------------------------------------------------------------
   portfolio_cnt = 0
   portfolio_reload = 24
@@ -230,6 +197,8 @@ def fire():
 
   url_tg_prefix = f'https://api.telegram.org/bot{bot_token}/sendMessage?chat_id={chat_id}&text='
   url_tg_getUpdate = f'https://api.telegram.org/bot{bot_token}/getupdates?offset=-1'
+  json_file_path = "data.json"
+  pcnt_file_path = "pcnt.pkl"
 
   #--------------------------------------------------------------------------------
   #now = datetime.now()
@@ -238,52 +207,40 @@ def fire():
   now = datetime.now(ZoneInfo("Asia/Taipei"))
   mins = now.hour * 60 + now.minute
   day = now.weekday()
+  
+  session = requests.Session(impersonate="chrome")
 
-
-  # Load saved portfolio and counter from storage
   if os.path.exists(pcnt_file_path):
     with open(pcnt_file_path, "rb") as f:
       portfolio_cnt = pickle.load(f)
-      print('--------------------------------------------------------------------------------')
-      print(f"Loaded data - counter: {portfolio_cnt}")
-      print('--------------------------------------------------------------------------------')
+      print(f"Loaded data - counter:\n {portfolio_cnt}")
       if not isinstance(portfolio_cnt, int):
         portfolio_cnt = 0
-      if portfolio_cnt > 240:
+      if portfolio_cnt > 360:
         portfolio_cnt = 0
 
   if os.path.exists(json_file_path):
-    with open(json_file_path, "r") as f:      
-      try:
-        portfolio = json.load(f)
-        print('--------------------------------------------------------------------------------')
-        print(f"Loaded data - portfolio:\n{portfolio}")
-        print('--------------------------------------------------------------------------------')
-      except json.JSONDecodeError as e:
-        print(f"Error decoding JSON: {e}")
-      finally:
-        portfolio = [["2454.TW", 820, 1200], ["2330.TW", 1000, 1200]]
-
+    with open(json_file_path, "r") as f:
+      portfolio = json.load(f)
+      print(f"Loaded data - portfolio:\n {portfolio}")
       if len(portfolio) == 0:
         portfolio_cnt = 0
         portfolio.clear()
 
-
-  # Return immediately in sleep duration
-  if (mins > (timestamp[0] + query_interval)) and (mins < (timestamp[1] - query_interval)):  # 00:30 (30) ~ 07:30 (450)
+  if (mins > (timestamp[0] + 1)) and (mins < (timestamp[1] - 1)):  # 00:30 (30) ~ 07:30 (450)
     return f'portfolio_cnt = {portfolio_cnt} (sleep)'
 
   # For leisure hours, reduce report frequency (weekend, 13:30 (810) ~ 21:30 (1290))
-  if (day > 4) or ((mins > timestamp[2] + query_interval*3) and (mins < timestamp[3] - query_interval*3)):
+  if (day > 4) or ((mins > timestamp[2] + 2) and
+                   (mins < timestamp[3] - 15 - 2)):
     leisure_time = True
-    portfolio_reload = 240 / query_interval  # 4H
+    portfolio_reload = 360 / query_interval  # 6H
   else:
     leisure_time = False
     portfolio_reload = 120 / query_interval  # 2H
 
-
   # Reset portolio to trigee full report @13:32 and @21:28 (TW stock close, and before US open)
-  if (mins == (timestamp[2] + query_interval)) or (mins == (timestamp[3] - query_interval) or (mins == 450)):
+  if (mins == (timestamp[2] + 2)) or (mins == (timestamp[3] - 2)):
     portfolio_cnt = 0
     portfolio.clear()
     print("\nReset portofolio - 1")
@@ -291,16 +248,10 @@ def fire():
   if portfolio_cnt % portfolio_reload == 0:
     portfolio_cnt = 0
 
-
-  #--------------------------------------------------------------------------------
   timestamp_msg = datetime.strftime(now, '%H:%M:%S')
   msg_toast = []
   msg_toast.append(timestamp_msg + f' - Render (cnt={portfolio_cnt})')
   print(msg_toast[0])
-
-
-  #--------------------------------------------------------------------------------
-  session = requests.Session(impersonate="chrome")
 
   # Reload portfolio every 60 runs
   if portfolio_cnt == 0:
@@ -335,9 +286,13 @@ def fire():
         portfolio.clear()
         print("\nReset portofolio - 2")
         portfolio = json_git["portfolio"]
-        print('--------------------------------------------------------------------------------')
+        print(
+            '--------------------------------------------------------------------------------'
+        )
         print(portfolio)
-        print('--------------------------------------------------------------------------------')
+        print(
+            '--------------------------------------------------------------------------------'
+        )
 
     for p in portfolio:
       ma = ma_calculation(p, session)
@@ -356,9 +311,6 @@ def fire():
       print("\nMACD Hist (W) fall check")
       print(macd_w_is_fall)
 
-    msg_toast.append(get_fitx_histock(session))
-
-
   #--------------------------------------------------------------------------------
   # Start get stock quotes
   #chunk_len = len(portfolio)   # Set chunk length = portfolio length means only 1 package
@@ -367,7 +319,7 @@ def fire():
   sdp_base_tw = sdp_base_us = sdp_base = None
 
   for c in range(0, len(portfolio), chunk_len):
-   
+
     # Only can query 3 tickers at a time.
     chunk = portfolio[c:c + chunk_len]
     tickers = [p[IDX_T] for p in chunk]
@@ -403,9 +355,7 @@ def fire():
 
         # Symbols could be received in out-of-order, need match index
         for i in range(0, len(tickers)):
-          print("!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!")
-          print(f'{i} {c} {i+c} {x} {s} {portfolio[i+c][0]} {IDX_200MA} {IDX_P}')
-          print(portfolio[i+c])
+          #print(f'{i} {c} {i+c} {x} {s} {portfolio[i+c][0]}')
 
           if s != portfolio[i + c][IDX_T]:
             continue  # Check symobol name match
@@ -442,11 +392,8 @@ def fire():
                     file=sys.stdout)
 
           # 200MA diff
-          try:
-            if portfolio[i + c][IDX_200MA] != None:
-              sdp_radio += f" {((price-portfolio[i+c][IDX_200MA])/portfolio[i+c][IDX_200MA])*100  :.1f}%"
-          except Exception as e:
-            print(portfolio[i + c])
+          if portfolio[i + c][IDX_200MA] != None:
+            sdp_radio += f" {((price-portfolio[i+c][IDX_200MA])/portfolio[i+c][IDX_200MA])*100  :.1f}%"
 
           msg = ''
 
@@ -638,6 +585,7 @@ def fire():
 
   with open(json_file_path, "w") as f:
     json.dump(portfolio, f, indent=2)
+
   with open(pcnt_file_path, "wb") as f:
     pickle.dump(portfolio_cnt, f)
 
@@ -646,18 +594,20 @@ def fire():
   #--------------------------------------------------------------------------------
   if len(msg_toast) > 1:
 
-    print('--------------------------------------------------------------------------------')
+    print(
+        '\n--------------------------------------------------------------------------------'
+    )
     #print('\n'.join(msg_toast))
     s_len = 10
-    for s in range(0, len(msg_toast), s_len):  # if send all in one batch, TG will fail
+    for s in range(0, len(msg_toast),
+                   s_len):  # if send all in one batch, TG will fail
       msg_segment = msg_toast[s:s + s_len]
-      url_tg = url_tg_prefix + ('%0A'.join(msg_segment)).replace('&', '%26')  # Handle '&' in url
-      if tg_limited == False:
-        r = session.get(url_tg, headers=headers, timeout=2)
-      else:
-        print(url_tg)
-        print('--------------------------------------------------------------------------------')
 
-    return ('<br>'.join(msg_toast)).replace('%0A', '<br>')
+      url_tg = url_tg_prefix + ('%0A'.join(msg_segment)).replace(
+          '&', '%26')  # Handle '&' in url
+      r = session.get(url_tg, headers=headers, timeout=2)
+
+    return '<br>'.join(msg_toast)
+
   else:
     return msg_toast[0]
