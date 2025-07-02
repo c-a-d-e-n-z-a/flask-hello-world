@@ -241,18 +241,6 @@ def fire():
   day = now.weekday()
 
 
-  # Return immediately in sleep duration
-  if (mins > (timestamp[0] + query_interval)) and (mins < (timestamp[1] - query_interval)):  # 00:30 (30) ~ 07:30 (450)
-    return f'portfolio_cnt = {portfolio_cnt} (sleep)'
-
-  # For leisure hours, reduce report frequency (weekend, 13:30 (810) ~ 21:30 (1290))
-  if (day > 4) or ((mins > timestamp[2] + query_interval*3) and (mins < timestamp[3] - query_interval*3)):
-    leisure_time = True
-    portfolio_reload = 480 / query_interval  # 4H
-  else:
-    leisure_time = False
-    portfolio_reload = 120 / query_interval  # 2H
-
   # Load saved portfolio and counter from storage
   if os.path.exists(pcnt_file_path):
     with open(pcnt_file_path, "rb") as f:
@@ -280,6 +268,20 @@ def fire():
       if len(portfolio) == 0:
         portfolio_cnt = 0
         portfolio.clear()
+
+
+  # Return immediately in sleep duration
+  if (mins > (timestamp[0] + query_interval)) and (mins < (timestamp[1] - query_interval)):  # 00:30 (30) ~ 07:30 (450)
+    return f'portfolio_cnt = {portfolio_cnt} (sleep)'
+
+  # For leisure hours, reduce report frequency (weekend, 13:30 (810) ~ 21:30 (1290))
+  if (day > 4) or ((mins > timestamp[2] + query_interval*3) and (mins < timestamp[3] - query_interval*3)):
+    leisure_time = True
+    portfolio_reload = 240 / query_interval  # 4H
+  else:
+    leisure_time = False
+    portfolio_reload = 120 / query_interval  # 2H
+
 
   # Reset portolio to trigee full report @13:32 and @21:28 (TW stock close, and before US open)
   if (mins == (timestamp[2] + query_interval)) or (mins == (timestamp[3] - query_interval) or (mins == 450)):
@@ -439,8 +441,11 @@ def fire():
                     file=sys.stdout)
 
           # 200MA diff
-          if portfolio[i + c][IDX_200MA] != None:
-            sdp_radio += f" {((price-portfolio[i+c][IDX_200MA])/portfolio[i+c][IDX_200MA])*100  :.1f}%"
+          try:
+            if portfolio[i + c][IDX_200MA] != None:
+              sdp_radio += f" {((price-portfolio[i+c][IDX_200MA])/portfolio[i+c][IDX_200MA])*100  :.1f}%"
+          except e:
+            print(portfolio[i + c])
 
           msg = ''
 
