@@ -11,6 +11,9 @@ import requests
 from curl_cffi import requests
 from flask import Flask
 
+
+
+################################################################################################################################################################
 #--------------------------------------------------------------------------------
 # Telegarm info
 bot_token = os.environ.get('BOT_TOKEN')
@@ -50,9 +53,11 @@ DELTA_I_U = 0.00618  # delta up for index
 DELTA_I_D = -0.00618  # delta down for index
 DELTA_I_A = 0.00382  # delta abs for index
 
+#--------------------------------------------------------------------------------
 user_agent = 'Mozilla/5.0 (Macintosh; Intel Mac OS X 10_10_1) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/133.0.0.0 Safari/537.36'
 headers = {"User-Agent": user_agent}
 
+#--------------------------------------------------------------------------------
 p_u = '\U0001F534'  # price mark 🔴
 p_d = '\U0001F7E2'  # price mark 🟢
 a_u = '\U00002191'  # arrow mark ↑
@@ -75,8 +80,6 @@ def ma_calculation(ticker, session, use_adj=True):
       datetime.combine(endDate,
                        datetime.now().time()).timestamp())
 
-  #crumb = get_yahoo_crumb(session, ticker)
-  #crumb = "r7Y\u002FA17rsX3"
   crumb = "dx7e5yMCafJ"
   url_history = f"https://query1.finance.yahoo.com/v8/finance/chart/{ticker[0]}?period1={startDate_epoch}&period2={endDate_epoch}&interval=1d&events=history&includeAdjustedClose=true&events=div%2Csplits&crumb={crumb}"
   #print('  url=' + url_history)
@@ -88,11 +91,9 @@ def ma_calculation(ticker, session, use_adj=True):
     json_history = r.json()
 
     if use_adj == True:
-      close = json_history["chart"]["result"][0]["indicators"]["adjclose"][0][
-          "adjclose"]
+      close = json_history["chart"]["result"][0]["indicators"]["adjclose"][0]["adjclose"]
     else:
-      close = json_history["chart"]["result"][0]["indicators"]["quote"][0][
-          "close"]
+      close = json_history["chart"]["result"][0]["indicators"]["quote"][0]["close"]
 
     # Avoid nonetype calcuation
     if None in close:
@@ -157,11 +158,17 @@ def get_fitx_histock(session):
 app = Flask(__name__)
 
 
+
+
+################################################################################################################################################################
 @app.route('/')
 def index():
   return 'index'
-  
+ 
 
+
+
+################################################################################################################################################################
 @app.route('/fire/')
 def fire():
 
@@ -187,8 +194,6 @@ def fire():
   now = datetime.now(ZoneInfo("Asia/Taipei"))
   mins = now.hour * 60 + now.minute
   day = now.weekday()
-  
-  session = requests.Session(impersonate="chrome")
 
   if os.path.exists(pcnt_file_path):
     with open(pcnt_file_path, "rb") as f:
@@ -207,12 +212,12 @@ def fire():
         portfolio_cnt = 0
         portfolio.clear()
 
-  if (mins > (timestamp[0] + 1)) and (mins < (timestamp[1] - 1)):  # 00:30 (30) ~ 07:30 (450)
+  # Return immediately in sleep duration
+  if (mins > (timestamp[0] + query_interval)) and (mins < (timestamp[1] - query_interval)):  # 00:30 (30) ~ 07:30 (450)
     return f'portfolio_cnt = {portfolio_cnt} (sleep)'
 
   # For leisure hours, reduce report frequency (weekend, 13:30 (810) ~ 21:30 (1290))
-  if (day > 4) or ((mins > timestamp[2] + 2) and
-                   (mins < timestamp[3] - 15 - 2)):
+  if (day > 4) or ((mins > timestamp[2] + query_interval*3) and (mins < timestamp[3] - query_interval*3)):
     leisure_time = True
     portfolio_reload = 240 / query_interval  # 4H
   else:
@@ -220,7 +225,7 @@ def fire():
     portfolio_reload = 120 / query_interval  # 2H
 
   # Reset portolio to trigee full report @13:32 and @21:28 (TW stock close, and before US open)
-  if (mins == (timestamp[2] + 2)) or (mins == (timestamp[3] - 2)):
+  if (mins == (timestamp[2] + query_interval)) or (mins == (timestamp[3] - query_interval) or (mins == 450)):
     portfolio_cnt = 0
     portfolio.clear()
     print("\nReset portofolio - 1")
@@ -228,10 +233,16 @@ def fire():
   if portfolio_cnt % portfolio_reload == 0:
     portfolio_cnt = 0
 
+  
+  #--------------------------------------------------------------------------------
   timestamp_msg = datetime.strftime(now, '%H:%M:%S')
   msg_toast = []
   msg_toast.append(timestamp_msg + f' - Render (cnt={portfolio_cnt})')
   print(msg_toast[0])
+
+  
+  #--------------------------------------------------------------------------------
+  session = requests.Session(impersonate="chrome")
 
   # Reload portfolio every 60 runs
   if portfolio_cnt == 0:
@@ -253,9 +264,7 @@ def fire():
       for i in range(len(portfolio)):
         for j in range(3):
           if portfolio[i][j] != json_git["portfolio"][i][j]:
-            print(
-                f'[POR] ELM: {portfolio[i][j]} != {json_git["portfolio"][i][j]}'
-            )
+            print(f'[POR] ELM: {portfolio[i][j]} != {json_git["portfolio"][i][j]}')
             reset_portfolio = True
             break
         else:  # only execute when it's no break in the inner loop
@@ -266,13 +275,9 @@ def fire():
         portfolio.clear()
         print("\nReset portofolio - 2")
         portfolio = json_git["portfolio"]
-        print(
-            '--------------------------------------------------------------------------------'
-        )
+        print('--------------------------------------------------------------------------------')
         print(portfolio)
-        print(
-            '--------------------------------------------------------------------------------'
-        )
+        print('--------------------------------------------------------------------------------')
 
     for p in portfolio:
       ma = ma_calculation(p, session)
@@ -293,7 +298,7 @@ def fire():
 
     msg_toast.append(get_fitx_histock(session))
 
-  
+
   #--------------------------------------------------------------------------------
   # Start get stock quotes
   #chunk_len = len(portfolio)   # Set chunk length = portfolio length means only 1 package
@@ -577,9 +582,7 @@ def fire():
   #--------------------------------------------------------------------------------
   if len(msg_toast) > 1:
 
-    print(
-        '\n--------------------------------------------------------------------------------'
-    )
+    print('\n--------------------------------------------------------------------------------')
     #print('\n'.join(msg_toast))
     s_len = 10
     for s in range(0, len(msg_toast),
@@ -590,7 +593,7 @@ def fire():
           '&', '%26')  # Handle '&' in url
       r = session.get(url_tg, headers=headers, timeout=2)
 
-    return '<br>'.join(msg_toast)
+    return ('<br>'.join(msg_toast)).replace('%0A', '<br>')
 
   else:
     return msg_toast[0]
