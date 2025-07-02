@@ -7,10 +7,14 @@ import time
 from datetime import date, datetime, timedelta
 from zoneinfo import ZoneInfo
 
-import requests
+#import requests
 from curl_cffi import requests
 from flask import Flask
 
+
+
+
+################################################################################################################################################################
 #--------------------------------------------------------------------------------
 # Telegarm info
 bot_token = os.environ.get('BOT_TOKEN')
@@ -19,6 +23,12 @@ chat_id = os.environ.get('CHAT_ID')
 # Json url
 url_git_json = os.environ.get('URL_GIT_JSON')
 macd_git_json = os.environ.get('MACD_GIT_JSON')
+
+#if os.environ.get('COMPUTERNAME') == 'NB24110112':
+#  tg_limited = True
+#else:
+#  tg_limited = False
+tg_limited = False
 
 # Query internal in minutes
 query_interval = 2
@@ -50,15 +60,23 @@ DELTA_I_U = 0.00618  # delta up for index
 DELTA_I_D = -0.00618  # delta down for index
 DELTA_I_A = 0.00382  # delta abs for index
 
+#--------------------------------------------------------------------------------
 user_agent = 'Mozilla/5.0 (Macintosh; Intel Mac OS X 10_10_1) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/133.0.0.0 Safari/537.36'
 headers = {"User-Agent": user_agent}
 
+#--------------------------------------------------------------------------------
 p_u = '\U0001F534'  # price mark 🔴
 p_d = '\U0001F7E2'  # price mark 🟢
 a_u = '\U00002191'  # arrow mark ↑
 a_d = '\U00002193'  # arrow mark ↓
 l_c_u = '\U0000274C'  # MA cross upwards mark ❌
 l_c_d = '\U0000274E'  # MA corss downwards mark ❎
+
+#--------------------------------------------------------------------------------
+json_file_path = "data.json"
+pcnt_file_path = "pcnt.pkl"
+
+
 
 
 ################################################################################################################################################################
@@ -75,8 +93,6 @@ def ma_calculation(ticker, session, use_adj=True):
       datetime.combine(endDate,
                        datetime.now().time()).timestamp())
 
-  #crumb = get_yahoo_crumb(session, ticker)
-  #crumb = "r7Y\u002FA17rsX3"
   crumb = "dx7e5yMCafJ"
   url_history = f"https://query1.finance.yahoo.com/v8/finance/chart/{ticker[0]}?period1={startDate_epoch}&period2={endDate_epoch}&interval=1d&events=history&includeAdjustedClose=true&events=div%2Csplits&crumb={crumb}"
   #print('  url=' + url_history)
@@ -88,11 +104,9 @@ def ma_calculation(ticker, session, use_adj=True):
     json_history = r.json()
 
     if use_adj == True:
-      close = json_history["chart"]["result"][0]["indicators"]["adjclose"][0][
-          "adjclose"]
+      close = json_history["chart"]["result"][0]["indicators"]["adjclose"][0]["adjclose"]
     else:
-      close = json_history["chart"]["result"][0]["indicators"]["quote"][0][
-          "close"]
+      close = json_history["chart"]["result"][0]["indicators"]["quote"][0]["close"]
 
     # Avoid nonetype calcuation
     if None in close:
@@ -121,6 +135,8 @@ def ma_calculation(ticker, session, use_adj=True):
     print(f'{ticker[0]}:\n  Error in price list: {url_history}',
           file=sys.stdout)
     return [None, None, None, None, None, None, None, None, None]
+
+
 
 
 ################################################################################################################################################################
@@ -173,15 +189,55 @@ def get_fitx_histock():
   return quote
 
 
+
+
 ################################################################################################################################################################
 app = Flask(__name__)
 
 
+
+
+################################################################################################################################################################
 @app.route('/')
 def index():
   return 'index'
-  
 
+
+
+
+################################################################################################################################################################
+@app.route('/reset/')
+def reset():
+  print('--------------------------------------------------------------------------------')
+  if os.path.exists(pcnt_file_path):
+    with open(pcnt_file_path, "rb") as f:
+      portfolio_cnt = pickle.load(f)
+      print(f"Loaded data - counter:{portfolio_cnt}")
+
+  if os.path.exists(json_file_path):
+    with open(json_file_path, "r") as f:
+      portfolio = json.load(f)
+      print(f"Loaded data - portfolio:\n{portfolio}")
+
+  with open(json_file_path, "w") as f:
+    portfolio.clear()
+    json.dump(portfolio, f, indent=2)
+
+  with open(pcnt_file_path, "wb") as f:
+    portfolio_cnt = 0
+    pickle.dump(portfolio_cnt, f)
+
+  print("\nReset portofolio - 0")
+  print('--------------------------------------------------------------------------------')
+
+  return 'reset'
+
+  gc.collect()
+
+
+
+
+################################################################################################################################################################
 @app.route('/fire/')
 def fire():
 
@@ -197,8 +253,6 @@ def fire():
 
   url_tg_prefix = f'https://api.telegram.org/bot{bot_token}/sendMessage?chat_id={chat_id}&text='
   url_tg_getUpdate = f'https://api.telegram.org/bot{bot_token}/getupdates?offset=-1'
-  json_file_path = "data.json"
-  pcnt_file_path = "pcnt.pkl"
 
   #--------------------------------------------------------------------------------
   #now = datetime.now()
@@ -207,40 +261,44 @@ def fire():
   now = datetime.now(ZoneInfo("Asia/Taipei"))
   mins = now.hour * 60 + now.minute
   day = now.weekday()
-  
-  session = requests.Session(impersonate="chrome")
 
+
+  # Return immediately in sleep duration
+  if (mins > (timestamp[0] + query_interval)) and (mins < (timestamp[1] - query_interval)):  # 00:30 (30) ~ 07:30 (450)
+    return f'portfolio_cnt = {portfolio_cnt} (sleep)'
+
+  # For leisure hours, reduce report frequency (weekend, 13:30 (810) ~ 21:30 (1290))
+  if (day > 4) or ((mins > timestamp[2] + query_interval*3) and (mins < timestamp[3] - query_interval*3)):
+    leisure_time = True
+    portfolio_reload = 480 / query_interval  # 4H
+  else:
+    leisure_time = False
+    portfolio_reload = 120 / query_interval  # 2H
+
+  # Load saved portfolio and counter from storage
   if os.path.exists(pcnt_file_path):
     with open(pcnt_file_path, "rb") as f:
       portfolio_cnt = pickle.load(f)
-      print(f"Loaded data - counter:\n {portfolio_cnt}")
+      print('--------------------------------------------------------------------------------')
+      print(f"Loaded data - counter: {portfolio_cnt}")
+      print('--------------------------------------------------------------------------------')
       if not isinstance(portfolio_cnt, int):
         portfolio_cnt = 0
-      if portfolio_cnt > 360:
+      if portfolio_cnt > 240:
         portfolio_cnt = 0
 
   if os.path.exists(json_file_path):
     with open(json_file_path, "r") as f:
       portfolio = json.load(f)
-      print(f"Loaded data - portfolio:\n {portfolio}")
+      print('--------------------------------------------------------------------------------')
+      print(f"Loaded data - portfolio:\n{portfolio}")
+      print('--------------------------------------------------------------------------------')
       if len(portfolio) == 0:
         portfolio_cnt = 0
         portfolio.clear()
 
-  if (mins > (timestamp[0] + 1)) and (mins < (timestamp[1] - 1)):  # 00:30 (30) ~ 07:30 (450)
-    return f'portfolio_cnt = {portfolio_cnt} (sleep)'
-
-  # For leisure hours, reduce report frequency (weekend, 13:30 (810) ~ 21:30 (1290))
-  if (day > 4) or ((mins > timestamp[2] + 2) and
-                   (mins < timestamp[3] - 15 - 2)):
-    leisure_time = True
-    portfolio_reload = 360 / query_interval  # 6H
-  else:
-    leisure_time = False
-    portfolio_reload = 120 / query_interval  # 2H
-
   # Reset portolio to trigee full report @13:32 and @21:28 (TW stock close, and before US open)
-  if (mins == (timestamp[2] + 2)) or (mins == (timestamp[3] - 2)):
+  if (mins == (timestamp[2] + query_interval)) or (mins == (timestamp[3] - query_interval) or (mins == 450)):
     portfolio_cnt = 0
     portfolio.clear()
     print("\nReset portofolio - 1")
@@ -248,10 +306,16 @@ def fire():
   if portfolio_cnt % portfolio_reload == 0:
     portfolio_cnt = 0
 
+
+  #--------------------------------------------------------------------------------
   timestamp_msg = datetime.strftime(now, '%H:%M:%S')
   msg_toast = []
   msg_toast.append(timestamp_msg + f' - Render (cnt={portfolio_cnt})')
   print(msg_toast[0])
+
+
+  #--------------------------------------------------------------------------------
+  session = requests.Session(impersonate="chrome")
 
   # Reload portfolio every 60 runs
   if portfolio_cnt == 0:
@@ -286,13 +350,9 @@ def fire():
         portfolio.clear()
         print("\nReset portofolio - 2")
         portfolio = json_git["portfolio"]
-        print(
-            '--------------------------------------------------------------------------------'
-        )
+        print('--------------------------------------------------------------------------------')
         print(portfolio)
-        print(
-            '--------------------------------------------------------------------------------'
-        )
+        print('--------------------------------------------------------------------------------')
 
     for p in portfolio:
       ma = ma_calculation(p, session)
@@ -585,7 +645,6 @@ def fire():
 
   with open(json_file_path, "w") as f:
     json.dump(portfolio, f, indent=2)
-
   with open(pcnt_file_path, "wb") as f:
     pickle.dump(portfolio_cnt, f)
 
@@ -594,21 +653,18 @@ def fire():
   #--------------------------------------------------------------------------------
   if len(msg_toast) > 1:
 
-    print(
-        '\n--------------------------------------------------------------------------------'
-    )
+    print('--------------------------------------------------------------------------------')
     #print('\n'.join(msg_toast))
     s_len = 10
-    for s in range(0, len(msg_toast),
-                   s_len):  # if send all in one batch, TG will fail
+    for s in range(0, len(msg_toast), s_len):  # if send all in one batch, TG will fail
       msg_segment = msg_toast[s:s + s_len]
+      url_tg = url_tg_prefix + ('%0A'.join(msg_segment)).replace('&', '%26')  # Handle '&' in url
+      if tg_limited == False:
+        r = session.get(url_tg, headers=headers, timeout=2)
+      else:
+        print(url_tg)
+        print('--------------------------------------------------------------------------------')
 
-      url_tg = url_tg_prefix + ('%0A'.join(msg_segment)).replace(
-          '&', '%26')  # Handle '&' in url
-      r = session.get(url_tg, headers=headers, timeout=2)
-
-    return '<br>'.join(msg_toast)
-
+    return ('<br>'.join(msg_toast)).replace('%0A', '<br>')
   else:
     return msg_toast[0]
-
