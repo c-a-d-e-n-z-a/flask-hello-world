@@ -716,15 +716,15 @@ def compare():
     beta_dict[stock_dfs[i].name] = beta_value
 
   # Beta string
-  beta_str = " | ".join([f"{name} / {base_df.name} β={beta_value:.2f}" for name, beta_value in beta_dict.items()])
+  beta_str = " | ".join([f"{name}/{base_df.name} β={beta_value:.2f}" for name, beta_value in beta_dict.items()])
 
   # Stats string
   stats_string = ""
   for df in stock_dfs:
-    stats_string += f'{df.name} ({df["Adj Close Var"].iloc[-1] - df["Adj Close Var"].iloc[0]:5.2f}, {df["Adj Close Var"].std():5.2f}) '
+    stats_string += f'{df.name} ({df["Adj Close Var"].iloc[-1] - df["Adj Close Var"].iloc[0]:5.2f}%, ρ={df["Adj Close Var"].std():5.2f}) '
 
   # Plot
-  line = Line(init_opts=opts.InitOpts(page_title=" vs ".join(tickers), height='900px', width='1800px'))
+  line = Line(init_opts=opts.InitOpts(page_title=" vs ".join(tickers), height='900px', width='1880px'))
   dates = stock_dfs[base_idx].index.strftime('%Y%m%d').tolist()
   line.add_xaxis(xaxis_data=dates)
   for df in stock_dfs:
