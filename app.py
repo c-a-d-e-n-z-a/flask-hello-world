@@ -7,7 +7,7 @@ import time
 from datetime import date, datetime, timedelta
 from zoneinfo import ZoneInfo
 
-import requests
+#import requests
 from curl_cffi import requests
 from flask import Flask
 
@@ -597,3 +597,158 @@ def fire():
 
   else:
     return msg_toast[0]
+
+
+
+
+################################################################################################################################################################
+################################################################################################################################################################
+from pyecharts import options as opts
+from pyecharts.charts import Line
+import pandas as pd
+import numpy as np
+
+
+
+
+################################################################################################################################################################
+def get_stock_data(ticker, start_date, end_date, session, crumb="F7GXvns0Eji"):
+  start_epoch = int(datetime.datetime.combine(start_date, datetime.datetime.min.time()).timestamp())
+  end_epoch = int(datetime.datetime.combine(end_date, datetime.datetime.min.time()).timestamp())
+  url = f"https://query1.finance.yahoo.com/v8/finance/chart/{ticker}?period1={start_epoch}&period2={end_epoch}&interval=1d&events=history&includeAdjustedClose=true&events=div%2Csplits&crumb={crumb}"
+  headers = {'user-agent': 'Mozilla/5.0'}
+  r = session.get(url, headers=headers, timeout=5)
+  r.raise_for_status()
+  data = r.json()
+  result = data["chart"]["result"][0]
+  quote = result["indicators"]["quote"][0]
+  adjclose = result["indicators"]["adjclose"][0]["adjclose"]
+  df = pd.DataFrame({
+    "Date": pd.to_datetime(result["timestamp"], unit='s'),
+    "Open": quote["open"],
+    "High": quote["high"],
+    "Low": quote["low"],
+    "Close": quote["close"],
+    "Adj Close": adjclose,
+    "Volume": quote["volume"]
+  }).set_index("Date")
+  df.name = ticker
+  return df
+
+
+
+
+################################################################################################################################################################
+def calculate_variation(df):
+  df['Adj Close Var'] = (df['Adj Close'] / df['Adj Close'].iloc[0]) * 100
+  return df
+
+
+
+
+################################################################################################################################################################
+def align_dataframes(dfs):
+  min_len = min(len(df) for df in dfs)
+  base_index = min(range(len(dfs)), key=lambda i: len(dfs[i]))
+  base_dates = dfs[base_index].index
+  for i, df in enumerate(dfs):
+    if len(df) != min_len:
+      dfs[i] = df.reindex(base_dates, method='ffill')
+      dfs[i].name = df.name
+  return dfs, base_index
+
+
+
+
+################################################################################################################################################################
+def compute_beta(df1, df2):
+  m = df1['Adj Close'].pct_change().dropna()
+  t = df2['Adj Close'].pct_change().dropna()
+  min_len = min(len(m), len(t))
+  m, t = m[-min_len:], t[-min_len:]
+  cov = np.cov(m, t)[0][1]
+  var = np.var(m)
+  return cov / var if var != 0 else np.nan
+
+
+
+
+################################################################################################################################################################
+@app.route('/compare', methods=['GET'])
+def compare():
+  tickers = request.args.get('tickers')
+  days = request.args.get('days', default=1800, type=int)
+  if not tickers:
+    return "Please provide tickers parameter, e.g. ?tickers=AAPL,MSFT", 400
+  tickers = [t.strip() for t in tickers.replace(' ', ',').split(',') if t.strip()]
+  if len(tickers) < 1:
+    return "Please provide at least one ticker.", 400
+
+  today = datetime.date.today()
+  start_date = today - datetime.timedelta(days=days)
+  session = requests.Session(impersonate="chrome")
+
+
+  stock_dfs = []
+  errors = []
+  for ticker in tickers:
+    try:
+      df = get_stock_data(ticker, start_date, today, session)
+      df = calculate_variation(df)
+      stock_dfs.append(df)
+    except Exception as e:
+      errors.append(f"{ticker}: {e}")
+
+  if not stock_dfs:
+    return "No data fetched.<br>" + "<br>".join(errors), 500
+
+  stock_dfs, base_idx = align_dataframes(stock_dfs)
+
+  # Calculate beta
+  beta_dict = {}
+  base_df = stock_dfs[0]
+  for i in range(1, len(stock_dfs)):
+    beta_value = compute_beta(base_df, stock_dfs[i])
+    beta_dict[stock_dfs[i].name] = beta_value
+
+  # Beta string
+  beta_str = " | ".join([f"{name} / {base_df.name} β={beta_value:.2f}" for name, beta_value in beta_dict.items()])
+
+  # Stats string
+  stats_string = ""
+  for df in stock_dfs:
+    stats_string += f'{df.name} ({df["Adj Close Var"].iloc[-1] - df["Adj Close Var"].iloc[0]:5.2f}, {df["Adj Close Var"].std():5.2f}) '
+
+  # Plot
+  line = Line(init_opts=opts.InitOpts(page_title=" vs ".join(tickers), height='900px', width='1800px'))
+  dates = stock_dfs[base_idx].index.strftime('%Y%m%d').tolist()
+  line.add_xaxis(xaxis_data=dates)
+  for df in stock_dfs:
+    line.add_yaxis(
+      series_name=df.name,
+      y_axis=df["Adj Close Var"].map('{:.2f}'.format).tolist(),
+      is_smooth=False,
+      is_symbol_show=False,
+      is_hover_animation=False,
+      linestyle_opts=opts.LineStyleOpts(width=1, opacity=0.9)
+    )
+  line.set_global_opts(
+    xaxis_opts=opts.AxisOpts(axislabel_opts=opts.LabelOpts(font_size=10)),
+    yaxis_opts=opts.AxisOpts(is_scale=False, splitarea_opts=opts.SplitAreaOpts(is_show=True, areastyle_opts=opts.AreaStyleOpts(opacity=0.5))),
+    tooltip_opts=opts.TooltipOpts(trigger="axis", axis_pointer_type="cross", textstyle_opts=opts.TextStyleOpts(font_size=12)),
+    legend_opts=opts.LegendOpts(textstyle_opts=opts.TextStyleOpts(font_size=12)),
+    datazoom_opts=[
+      opts.DataZoomOpts(is_show=False, type_="inside", xaxis_index=[0], range_start=0, range_end=100, is_realtime=False),
+      opts.DataZoomOpts(is_show=True, xaxis_index=[0], type_="slider", pos_top="98%", range_start=0, range_end=100, is_realtime=False),
+    ],
+    title_opts=opts.TitleOpts(
+      title=stats_string,
+      subtitle=beta_str,  # beta in subtitle
+      pos_left='10%',
+      pos_top='10%'
+    ),
+    toolbox_opts=opts.ToolboxOpts(is_show=True, feature={"dataZoom": {"yAxisIndex": "none"}, "restore": {}, "saveAsImage": {}}),
+  )
+
+  # Return HTML
+  return line.render_embed()
