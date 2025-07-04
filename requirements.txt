@@ -2,3 +2,6 @@ Flask
 requests
 curl_cffi
 Gunicorn
+pandas
+numpy
+pyecharts
