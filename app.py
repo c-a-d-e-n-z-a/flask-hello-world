@@ -690,7 +690,7 @@ def compare():
     return "Please provide at least one ticker.", 400
 
   today = date.today()
-  startDate = today - timedelta(days=days)
+  start_date = today - timedelta(days=days)
   session = requests.Session(impersonate="chrome")
  
   stock_dfs = []
