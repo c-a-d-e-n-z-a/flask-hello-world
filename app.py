@@ -613,9 +613,11 @@ from flask import request
 
 ################################################################################################################################################################
 def get_stock_data(ticker, start_date, end_date, session, crumb="F7GXvns0Eji"):
-  start_epoch = int(datetime.datetime.combine(start_date, datetime.datetime.min.time()).timestamp())
-  end_epoch = int(datetime.datetime.combine(end_date, datetime.datetime.min.time()).timestamp())
+
+  start_epoch = int(datetime.combine(start_date, datetime.min.time()).timestamp())
+  end_epoch = int(datetime.combine(end_date, datetime.min.time()).timestamp())
   url = f"https://query1.finance.yahoo.com/v8/finance/chart/{ticker}?period1={start_epoch}&period2={end_epoch}&interval=1d&events=history&includeAdjustedClose=true&events=div%2Csplits&crumb={crumb}"
+  
   headers = {'user-agent': 'Mozilla/5.0'}
   r = session.get(url, headers=headers, timeout=5)
   r.raise_for_status()
@@ -640,6 +642,7 @@ def get_stock_data(ticker, start_date, end_date, session, crumb="F7GXvns0Eji"):
 
 ################################################################################################################################################################
 def calculate_variation(df):
+  
   df['Adj Close Var'] = (df['Adj Close'] / df['Adj Close'].iloc[0]) * 100
   return df
 
@@ -648,6 +651,7 @@ def calculate_variation(df):
 
 ################################################################################################################################################################
 def align_dataframes(dfs):
+  
   min_len = min(len(df) for df in dfs)
   base_index = min(range(len(dfs)), key=lambda i: len(dfs[i]))
   base_dates = dfs[base_index].index
@@ -676,6 +680,7 @@ def compute_beta(df1, df2):
 ################################################################################################################################################################
 @app.route('/compare', methods=['GET'])
 def compare():
+  
   tickers = request.args.get('tickers')
   days = request.args.get('days', default=1800, type=int)
   if not tickers:
@@ -684,11 +689,10 @@ def compare():
   if len(tickers) < 1:
     return "Please provide at least one ticker.", 400
 
-  today = datetime.date.today()
-  start_date = today - datetime.timedelta(days=days)
+  today = date.today()
+  startDate = today - timedelta(days=days)
   session = requests.Session(impersonate="chrome")
-
-
+ 
   stock_dfs = []
   errors = []
   for ticker in tickers:
@@ -732,6 +736,7 @@ def compare():
       is_hover_animation=False,
       linestyle_opts=opts.LineStyleOpts(width=1, opacity=0.9)
     )
+  
   line.set_global_opts(
     xaxis_opts=opts.AxisOpts(axislabel_opts=opts.LabelOpts(font_size=10)),
     yaxis_opts=opts.AxisOpts(is_scale=False, splitarea_opts=opts.SplitAreaOpts(is_show=True, areastyle_opts=opts.AreaStyleOpts(opacity=0.5))),
