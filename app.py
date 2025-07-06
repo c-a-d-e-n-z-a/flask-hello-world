@@ -225,7 +225,7 @@ def fire():
     portfolio_reload = 120 / query_interval  # 2H
 
   # Reset portolio to trigee full report @13:32 and @21:28 (TW stock close, and before US open)
-  if (mins == (timestamp[2] + query_interval)) or (mins == (timestamp[3] - query_interval) or (mins == 450)):
+  if ( ((mins == (timestamp[2] + query_interval)) or (mins == (timestamp[3] - query_interval)) and (day < 5) ) or (mins == 450)):
     portfolio_cnt = 0
     portfolio.clear()
     print("\nReset portofolio - 1")
