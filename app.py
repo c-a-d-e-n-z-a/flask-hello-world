@@ -24,7 +24,7 @@ url_git_json = os.environ.get('URL_GIT_JSON')
 macd_git_json = os.environ.get('MACD_GIT_JSON')
 
 # Query internal in minutes
-query_interval = 2
+query_interval = 3
 
 #--------------------------------------------------------------------------------
 # Other default constants
