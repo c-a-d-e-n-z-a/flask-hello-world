@@ -721,7 +721,7 @@ def compare():
   # Stats string
   stats_string = ""
   for df in stock_dfs:
-    stats_string += f'{df.name} ({df["Adj Close Var"].iloc[-1] - df["Adj Close Var"].iloc[0]:5.2f}%, ρ={df["Adj Close Var"].std():5.2f}) '
+    stats_string += f'{df.name} (δ={df["Adj Close Var"].iloc[-1] - df["Adj Close Var"].iloc[0]:5.2f}%, σ={df["Adj Close Var"].std():5.2f}%) '
 
   # Plot
   line = Line(init_opts=opts.InitOpts(page_title=" vs ".join(tickers), height='900px', width='1880px'))
