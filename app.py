@@ -224,11 +224,11 @@ def fire():
     leisure_time = False
     portfolio_reload = 120 / query_interval  # 2H
 
-  # Reset portolio to trigee full report @13:32 and @21:28 (TW stock close, and before US open)
-  if ( ((mins == (timestamp[2] + query_interval)) or (mins == (timestamp[3] - query_interval)) and (day < 5) ) or (mins == 450)):
+  # Reset portolio to trigee full report, like @13:33 and @21:27 (TW stock close, and before US open), and always reset @7:30
+  if (day < 5 and ((mins == timestamp[2] + query_interval) or (mins == timestamp[3] - query_interval))) or (mins == 450):
     portfolio_cnt = 0
     portfolio.clear()
-    print("\nReset portofolio - 1")
+    print("\nReset portfolio - 1")
 
   if portfolio_cnt % portfolio_reload == 0:
     portfolio_cnt = 0
@@ -237,7 +237,7 @@ def fire():
   #--------------------------------------------------------------------------------
   timestamp_msg = datetime.strftime(now, '%H:%M:%S')
   msg_toast = []
-  msg_toast.append(timestamp_msg + f' - Render (cnt={portfolio_cnt})')
+  msg_toast.append(timestamp_msg + f' ({day+1}) - Render (cnt={portfolio_cnt})')
   print(msg_toast[0])
 
   
@@ -273,7 +273,7 @@ def fire():
 
       if reset_portfolio == True:
         portfolio.clear()
-        print("\nReset portofolio - 2")
+        print("\nReset portfolio - 2")
         portfolio = json_git["portfolio"]
         print('--------------------------------------------------------------------------------')
         print(portfolio)
