@@ -678,7 +678,7 @@ def compute_beta(df1, df2):
 
 
 ################################################################################################################################################################
-@app.route('/compare', methods=['GET'])
+@app.route('/compare', methods=['GET', 'POST'])
 def compare():
   
   if request.method == 'POST':
