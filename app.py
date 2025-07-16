@@ -681,8 +681,13 @@ def compute_beta(df1, df2):
 @app.route('/compare', methods=['GET'])
 def compare():
   
-  tickers = request.args.get('tickers')
-  days = request.args.get('days', default=1800, type=int)
+  if request.method == 'POST':
+    tickers = request.form.get('tickers')
+    days = int(request.form.get('days', 1800))
+  else:
+    tickers = request.args.get('tickers')
+    days = int(request.args.get('days', 1800))
+    
   if not tickers:
     return "Please provide tickers parameter, e.g. ?tickers=AAPL,MSFT", 400
   tickers = [t.strip() for t in tickers.replace(' ', ',').split(',') if t.strip()]
@@ -716,13 +721,13 @@ def compare():
     beta_dict[stock_dfs[i].name] = beta_value
 
   # Beta string
-  beta_str = " | ".join([f"{name}/{base_df.name} β={beta_value:.2f}" for name, beta_value in beta_dict.items()])
+  beta_str = "\n".join([f"{name} / {base_df.name}: β={beta_value:.2f}" for name, beta_value in beta_dict.items()])
 
   # Stats string
   stats_string = ""
   for df in stock_dfs:
-    stats_string += f'{df.name} (δ={df["Adj Close Var"].iloc[-1] - df["Adj Close Var"].iloc[0]:5.2f}%, σ={df["Adj Close Var"].std():5.2f}%) '
-
+    stats_string += f'{df.name}: δ={df["Adj Close Var"].iloc[-1] - df["Adj Close Var"].iloc[0]:5.2f}%, σ={df["Adj Close Var"].std():5.2f}%\n'
+  
   # Plot
   line = Line(init_opts=opts.InitOpts(page_title=" vs ".join(tickers), height='900px', width='1880px'))
   dates = stock_dfs[base_idx].index.strftime('%Y%m%d').tolist()
@@ -750,10 +755,78 @@ def compare():
       title=stats_string,
       subtitle=beta_str,  # beta in subtitle
       pos_left='10%',
-      pos_top='10%'
+      pos_top='10%',
+      title_textstyle_opts=opts.TextStyleOpts(font_size=12),
+      subtitle_textstyle_opts=opts.TextStyleOpts(font_size=12)
     ),
     toolbox_opts=opts.ToolboxOpts(is_show=True, feature={"dataZoom": {"yAxisIndex": "none"}, "restore": {}, "saveAsImage": {}}),
   )
 
   # Return HTML
   return line.render_embed()
+
+
+
+
+################################################################################################################################################################
+@app.route('/performance/', methods=['GET'])
+def performance_diff():
+    return '''
+    <!DOCTYPE html>
+    <html lang="en">
+    <head>
+        <meta charset="UTF-8">
+        <title>Stock Compare</title>
+        <link href="https://cdn.jsdelivr.net/npm/bootstrap@5.3.0/dist/css/bootstrap.min.css" rel="stylesheet">
+        <style>
+            body {
+                background: #f8f9fa;
+            }
+            .container {
+                max-width: 600px;
+                margin-top: 80px;
+                background: #fff;
+                border-radius: 12px;
+                box-shadow: 0 2px 16px rgba(0,0,0,0.08);
+                padding: 32px 32px 24px 32px;
+            }
+            .form-label {
+                font-weight: 500;
+            }
+            .btn-primary {
+                width: 100%;
+                font-size: 1.1rem;
+                padding: 10px;
+            }
+            h2 {
+                text-align: center;
+                margin-bottom: 32px;
+                font-weight: 700;
+                color: #2c3e50;
+            }
+        </style>
+    </head>
+    <body>
+        <div class="container">
+            <h2>Stock Performance Comparison</h2>
+            <form action="/compare" method="post">
+                <div class="mb-3">
+                    <label for="tickers" class="form-label">Tickers (comma separated):</label>
+                    <input type="text" class="form-control" id="tickers" name="tickers" value="^GSPC,AAPL" required>
+                </div>
+                <div class="mb-3">
+                    <label for="days" class="form-label">Days:</label>
+                    <input type="number" class="form-control" id="days" name="days" value="1800" min="1" required>
+                </div>
+                <button type="submit" class="btn btn-primary">Compare</button>
+            </form>
+            <div class="text-center mt-4" style="color:#888;font-size:0.95em;">
+                Example: <code>^GSPC,AAPL,MSFT,GOOG</code> &nbsp; | &nbsp; Days: <code>3650</code><br>
+                Following tickers can be put as 1st position for beta calculation.<br>
+                <code>^GSPC=S&P 500, ^IXIC=NASDAQ, ^DJI=Dow Jones, ^TWII=TAIEX</code>
+                
+            </div>
+        </div>
+    </body>
+    </html>
+    '''
