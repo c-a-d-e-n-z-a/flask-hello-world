@@ -354,8 +354,10 @@ def fire():
           else:
             price = float(yahoo_portfolio[x]['price']['raw'])
 
-          price_1 = float(
-              yahoo_portfolio[x]['regularMarketPreviousClose']['raw'])
+          try:
+            price_1 = float(yahoo_portfolio[x]['regularMarketPreviousClose']['raw'])
+          except ValueError:
+            price_1 = price
 
           #print(f"{yahoo_portfolio[x]['symbol']}: {price}")
 
