@@ -1040,7 +1040,7 @@ def maxpain():
         except Exception as e:
             error = str(e)
 
-    print(f"max_pain = {max_pain}, underlying_price={underlying_price}")
+    print(f"max_pain_price = {max_pain}, underlying_price = {underlying_price}")
   
     return render_template(
         'maxpain.html',
