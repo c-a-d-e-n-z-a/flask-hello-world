@@ -1135,7 +1135,7 @@ def call_gemini(prompt):
 
 ################################################################################################################################################################
 @app.route('/analysis/', methods=['GET', 'POST'])
-def index():
+def analysis():
     genai.configure(api_key=gemini_api_key)
   
     analysis = None
