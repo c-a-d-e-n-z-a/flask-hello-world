@@ -1,0 +1,74 @@
+<!DOCTYPE html>
+<html>
+<head>
+    <meta charset="utf-8">
+    <title>Stock Option Max Pain</title>
+    <link href="https://cdn.jsdelivr.net/npm/bootstrap@5.3.0/dist/css/bootstrap.min.css" rel="stylesheet">
+    <script src="https://cdn.jsdelivr.net/npm/echarts/dist/echarts.min.js"></script>
+</head>
+<body class="bg-light">
+
+<div class="container mt-4">
+    <h3>Stock Option Max Pain</h3>
+
+    <form method="post" class="row g-2 mb-3">
+        <div class="col-md-3">
+            <input type="text" class="form-control" name="ticker" value="{{ ticker }}" placeholder="Ticker" required>
+        </div>
+        <div class="col-md-3">
+            <select name="expiration" class="form-select" {% if not expirations %}disabled{% endif %}>
+                <option value="">Expiration Date</option>
+                {% for exp in expirations %}
+                    <option value="{{ exp }}" {% if exp == selected_exp %}selected{% endif %}>{{ exp }}</option>
+                {% endfor %}
+            </select>
+        </div>
+        <div class="col-md-3">
+            <button type="submit" name="action" value="get_expirations" class="btn btn-outline-secondary w-100">Query Expiration Date</button>
+        </div>
+        <div class="col-md-3">
+            <button type="submit" name="action" value="get_chart" class="btn btn-primary w-100">Query Max Pain & OI</button>
+        </div>
+    </form>
+
+    {% if max_pain or underlying_price %}
+        <div class="alert alert-success">
+            {% if max_pain %}
+                <span><strong>Max Pain:</strong> {{ max_pain | round(2) }}</span>
+            {% endif %}
+            {% if underlying_price %}
+                <br><span><strong>Underlying Price:</strong> {{ underlying_price | round(2) }}</span>
+            {% endif %}
+        </div>
+    {% endif %}
+
+    {% if error %}
+        <div class="alert alert-danger">{{ error }}</div>
+    {% endif %}
+
+    <div id="chart1" style="width:100%;height:400px;" class="bg-white border rounded shadow-sm mb-4"></div>
+    <div id="chart2" style="width:100%;height:400px;" class="bg-white border rounded shadow-sm"></div>
+</div>
+
+{% if chart %}
+<script>
+    const charts = {{ chart | safe }};
+
+    var chartDom1 = document.getElementById('chart1');
+    var myChart1 = echarts.init(chartDom1);
+    myChart1.setOption(charts.chart1);
+
+    var chartDom2 = document.getElementById('chart2');
+    var myChart2 = echarts.init(chartDom2);
+    myChart2.setOption(charts.chart2);
+
+    // Windows adpation
+    window.addEventListener('resize', function() {
+        myChart1.resize();
+        myChart2.resize();
+    });
+</script>
+{% endif %}
+
+</body>
+</html>
