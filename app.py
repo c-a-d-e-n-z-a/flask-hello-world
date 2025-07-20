@@ -853,6 +853,10 @@ def get_expirations(ticker):
 def get_option_chain(ticker, expiration):
     stock = yf.Ticker(ticker)
     chain = stock.option_chain(expiration)
+  
+    del stock
+    gc.collect()
+  
     return chain.calls, chain.puts
 
 
@@ -874,6 +878,9 @@ def calculate_max_pain(calls, puts):
                 loss = row['openInterest'] * (row['strike'] - strike)
                 total_loss += loss
         pain[strike] = total_loss
+
+    del all_strikes
+    gc.collect()
 
     return min(pain, key=pain.get)
 
@@ -984,6 +991,9 @@ def build_chart_option(calls, puts, ticker, max_pain, underlying_price):
         ]
     }
 
+    del call_losses, put_losses, call_oi, put_oi
+    gc.collect()
+
     return json.dumps({"chart1": chart1, "chart2": chart2})
 
 
@@ -1021,12 +1031,17 @@ def maxpain():
                     underlying_price = 0
                 else:
                     underlying_price = hist['Close'][-1]
-                            
+                  
+                del hist
+                gc.collect()
+              
                 chart = build_chart_option(calls, puts, ticker, max_pain, underlying_price)
 
         except Exception as e:
             error = str(e)
 
+    print(f"max_pain = {max_pain}, underlying_price={underlying_price}")
+  
     return render_template(
         'maxpain.html',
         ticker=ticker,
@@ -1038,5 +1053,10 @@ def maxpain():
         error=error
     )
 
+
+
+
+################################################################################################################################################################
+################################################################################################################################################################
 if __name__ == '__main__':
     app.run(debug=True)
