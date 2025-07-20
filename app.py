@@ -1101,7 +1101,7 @@ def fetch_stock_data(ticker):
     
     hist = hist.reset_index().tail(60)
     
-    print(hist)
+    #print(hist)
     
     hist_dict = hist.to_dict(orient="records")
     
