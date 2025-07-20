@@ -1162,7 +1162,7 @@ def gemini_analysis():
                 error = f"分析過程發生錯誤: {e}"
 
             finally:
-                delete response, model
+                del response, model
                 gc.collect()
 
     return render_template('analysis.html', analysis=analysis, error=error, ticker=ticker, model=model_name)
