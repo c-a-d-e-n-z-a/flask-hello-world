@@ -6,5 +6,5 @@ pandas
 numpy
 pyecharts
 yfinance
-talib
+TA-Lib
 google.generativeai
