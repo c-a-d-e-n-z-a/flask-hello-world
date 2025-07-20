@@ -181,6 +181,8 @@ def index():
 @app.route('/fire/')
 def fire():
 
+  gc.collect()
+  
   #--------------------------------------------------------------------------------
   portfolio_cnt = 0
   portfolio_reload = 24
@@ -609,6 +611,7 @@ def fire():
   else:
     return msg_toast[0]
 
+  gc.collect()
 
 
 
@@ -1126,16 +1129,10 @@ def fetch_stock_data(ticker):
 
 
 ################################################################################################################################################################
-def call_gemini(prompt):
-    response = model.generate_content(prompt)
-    return response.text
-
-
-
-
-################################################################################################################################################################
 @app.route('/analysis/', methods=['GET', 'POST'])
 def gemini_analysis():
+    gc.collect()
+  
     genai.configure(api_key=gemini_api_key)
   
     analysis = None
@@ -1160,8 +1157,13 @@ def gemini_analysis():
                 model = genai.GenerativeModel(model_name)
                 response = model.generate_content(prompt)
                 analysis = response.text
+                      
             except Exception as e:
                 error = f"分析過程發生錯誤: {e}"
+
+            finally:
+                delete response, model
+                gc.collect()
 
     return render_template('analysis.html', analysis=analysis, error=error, ticker=ticker, model=model_name)
 
