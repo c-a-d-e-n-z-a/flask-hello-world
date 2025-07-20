@@ -5,3 +5,4 @@ Gunicorn
 pandas
 numpy
 pyecharts
+yfinance
