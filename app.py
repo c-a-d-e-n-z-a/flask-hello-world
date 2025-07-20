@@ -1139,8 +1139,6 @@ def gemini_analysis():
     error = None
     ticker = ''
     model_name = 'gemini-2.0-flash'  # 預設值
-    response = None
-    model = None
 
     if request.method == 'POST':
         ticker = request.form.get('ticker', '').strip()
@@ -1159,13 +1157,12 @@ def gemini_analysis():
                 model = genai.GenerativeModel(model_name)
                 response = model.generate_content(prompt)
                 analysis = response.text
+
+                del response, model
+                gc.collect()
                       
             except Exception as e:
                 error = f"分析過程發生錯誤: {e}"
-
-            finally:
-                del response, model
-                gc.collect()
 
     return render_template('analysis.html', analysis=analysis, error=error, ticker=ticker, model=model_name)
 
