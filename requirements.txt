@@ -6,5 +6,5 @@ pandas
 numpy
 pyecharts
 yfinance
-import talib
+talib
 google.generativeai
