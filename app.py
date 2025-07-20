@@ -1139,6 +1139,8 @@ def gemini_analysis():
     error = None
     ticker = ''
     model_name = 'gemini-2.0-flash'  # 預設值
+    response = None
+    model = None
 
     if request.method == 'POST':
         ticker = request.form.get('ticker', '').strip()
