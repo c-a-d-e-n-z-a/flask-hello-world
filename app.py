@@ -9,8 +9,12 @@ from zoneinfo import ZoneInfo
 
 #import requests
 from curl_cffi import requests
-from flask import Flask
-
+from flask import Flask, render_template, request
+import yfinance as yf
+import pandas as pd
+import numpy as np
+from pyecharts import options as opts
+from pyecharts.charts import Line
 
 
 ################################################################################################################################################################
@@ -605,11 +609,11 @@ def fire():
 
 ################################################################################################################################################################
 ################################################################################################################################################################
-from pyecharts import options as opts
-from pyecharts.charts import Line
-import pandas as pd
-import numpy as np
-from flask import request
+#from pyecharts import options as opts
+#from pyecharts.charts import Line
+#import pandas as pd
+#import numpy as np
+#from flask import request
 
 
 
@@ -832,3 +836,207 @@ def performance_diff():
     </body>
     </html>
     '''
+
+
+
+
+################################################################################################################################################################
+################################################################################################################################################################
+def get_expirations(ticker):
+    stock = yf.Ticker(ticker)
+    return stock.options
+
+
+
+
+################################################################################################################################################################
+def get_option_chain(ticker, expiration):
+    stock = yf.Ticker(ticker)
+    chain = stock.option_chain(expiration)
+    return chain.calls, chain.puts
+
+
+
+
+################################################################################################################################################################
+def calculate_max_pain(calls, puts):
+    all_strikes = sorted(set(calls['strike']).union(set(puts['strike'])))
+    pain = {}
+
+    for strike in all_strikes:
+        total_loss = 0
+        for _, row in calls.iterrows():
+            if row['strike'] < strike:
+                loss = row['openInterest'] * (strike - row['strike'])
+                total_loss += loss
+        for _, row in puts.iterrows():
+            if row['strike'] > strike:
+                loss = row['openInterest'] * (row['strike'] - strike)
+                total_loss += loss
+        pain[strike] = total_loss
+
+    return min(pain, key=pain.get)
+
+
+
+
+################################################################################################################################################################
+def build_chart_option(calls, puts, ticker, max_pain, underlying_price):
+
+    df_calls = calls[['strike', 'openInterest']].dropna()
+    df_puts = puts[['strike', 'openInterest']].dropna()
+
+    # 計算選擇權賣方的總損失
+    strikes = sorted(set(df_calls['strike']).union(set(df_puts['strike'])))
+    strike_labels = [str(s) for s in strikes]
+
+    call_losses = []
+    put_losses = []
+    for expiry_price in strikes:
+        # 看漲選擇權損失：價內 (strike < expiry_price)
+        call_loss = df_calls[df_calls['strike'] < expiry_price].apply(
+            lambda r: (expiry_price - r['strike']) * r['openInterest'], axis=1).sum()
+        # 看跌選擇權損失：價內 (strike > expiry_price)
+        put_loss = df_puts[df_puts['strike'] > expiry_price].apply(
+            lambda r: (r['strike'] - expiry_price) * r['openInterest'], axis=1).sum()
+        call_losses.append(float(call_loss))
+        put_losses.append(float(put_loss))
+
+    """
+    mark_line = {
+        "symbol": ["none", "none"],
+        "label": {"formatter": "{b}: {c}", "position": "insideMiddle"},
+        "lineStyle": {"type": "dashed"},
+        "data": [
+            {"xAxis": str(max_pain), "name": "Max Pain", "lineStyle": {"color": "blue"}},
+            {"xAxis": str(round(underlying_price, 2)), "name": "Underlying", "lineStyle": {"color": "orange"}}
+        ]
+    }
+    """
+    mark_line = {
+        "symbol": ["none", "none"],
+        "label": {"formatter": "{b}: {c}", "position": "insideMiddle"},
+        "lineStyle": {"type": "dashed"},
+        "data": []
+    }
+
+    # 保證轉成字串
+    if max_pain is not None:
+        mark_line["data"].append({
+            "xAxis": str(max_pain),
+            "name": "Max Pain",
+            "lineStyle": {"color": "blue"}
+        })
+
+    if underlying_price is not None:
+        # 找到離 underlying_price 最近的 strike（讓 x 軸可以對得上）
+        closest_strike = min(strikes, key=lambda x: abs(x - underlying_price))
+        mark_line["data"].append({
+            "xAxis": str(closest_strike),
+            "name": "Underlying",
+            "lineStyle": {"color": "orange"}
+        })
+
+    # chart1：選擇權賣方的總損失
+    chart1 = {
+        "tooltip": {"trigger": "axis"},
+        "legend": {"data": ["Call Loss", "Put Loss"]},
+        "xAxis": {
+            "type": "category",
+            "data": strike_labels,
+            "name": "履約價",
+            "axisLabel": {"rotate": 45}
+        },
+        "yAxis": {
+            "type": "value",
+            "name": "Total Loss ($)",
+            "min": "dataMin",
+            "max": "dataMax"
+        },
+        "series": [
+            {"name": "Call Loss", "type": "bar", "data": call_losses, "itemStyle": {"color": "#d62728"}, "markLine": mark_line},
+            {"name": "Put Loss", "type": "bar", "data": put_losses, "itemStyle": {"color": "#2ca02c"}},
+        ]
+    }
+
+    # chart2：未平倉合約數 (維持不變)
+    call_oi = [int(df_calls.set_index('strike').openInterest.get(s, 0)) for s in strikes]
+    put_oi = [-int(df_puts.set_index('strike').openInterest.get(s, 0)) for s in strikes]
+
+    chart2 = {
+        "tooltip": {"trigger": "axis"},
+        "legend": {"data": ["Call OI", "Put OI"]},
+        "xAxis": {
+            "type": "category",
+            "data": strike_labels,
+            "name": "履約價",
+            "axisLabel": {"rotate": 45}
+        },
+        "yAxis": {
+            "type": "value",
+            "name": "Open Interest",
+            "min": "dataMin",
+            "max": "dataMax"
+        },
+        "series": [
+            {"name": "Call OI", "type": "bar", "stack": "x", "data": call_oi, "itemStyle": {"color": "#d62728"}, "markLine": mark_line},
+            {"name": "Put OI", "type": "bar", "stack": "x", "data": put_oi, "itemStyle": {"color": "#2ca02c"}},
+        ]
+    }
+
+    return json.dumps({"chart1": chart1, "chart2": chart2})
+
+
+
+
+################################################################################################################################################################
+@app.route('/maxpain/', methods=['GET', 'POST'])
+def maxpain():
+    ticker = ""
+    expirations = []
+    selected_exp = ""
+    max_pain = None
+    chart = None
+    error = None
+    underlying_price = None
+
+    if request.method == 'POST':
+        action = request.form.get('action')
+        ticker = request.form.get('ticker', '').upper()
+        selected_exp = request.form.get('expiration')
+
+        try:
+            if action == 'get_expirations':
+                expirations = get_expirations(ticker)
+
+            elif action == 'get_chart':
+                expirations = get_expirations(ticker)               
+                if not selected_exp:
+                    raise ValueError("請選擇到期日")
+                calls, puts = get_option_chain(ticker, selected_exp)
+                max_pain = calculate_max_pain(calls, puts)
+                
+                hist = yf.Ticker(ticker).history(period="1d")
+                if hist.empty:
+                    underlying_price = 0
+                else:
+                    underlying_price = hist['Close'][-1]
+                            
+                chart = build_chart_option(calls, puts, ticker, max_pain, underlying_price)
+
+        except Exception as e:
+            error = str(e)
+
+    return render_template(
+        'maxpain.html',
+        ticker=ticker,
+        expirations=expirations,
+        selected_exp=selected_exp,
+        max_pain=max_pain,
+        underlying_price=underlying_price,
+        chart=chart,
+        error=error
+    )
+
+if __name__ == '__main__':
+    app.run(debug=True)
