@@ -15,8 +15,8 @@ import pandas as pd
 import numpy as np
 from pyecharts import options as opts
 from pyecharts.charts import Line
-import talib
-import google.generativeai as genai
+
+
 
 
 ################################################################################################################################################################
@@ -1060,111 +1060,6 @@ def maxpain():
         chart=chart,
         error=error
     )
-
-
-
-
-################################################################################################################################################################
-################################################################################################################################################################
-
-def fetch_stock_data(ticker):
-    close = 'Close'
-    MA_TYPE = 0
-    
-    stock = yf.Ticker(ticker)
-    hist = stock.history(period="2y", auto_adjust=True)        
-    hist['ATR'] = talib.ATR(hist['High'], hist['Low'], hist['Close'], timeperiod=5)
-    
-    hist.drop(['Open', 'High', 'Low', 'Stock Splits'], axis=1, inplace=True)
-    gc.collect()
-
-    hist['10MA'] = talib.SMA(hist[close], timeperiod=10)
-    hist['20MA'] = talib.SMA(hist[close], timeperiod=20)
-    hist['60MA'] = talib.SMA(hist[close], timeperiod=60)
-    hist['200MA'] = talib.SMA(hist[close], timeperiod=200)  
-    hist['Bollinger Band Upper'], hist['60MA'], hist['Bollinger Band Lower'] = talib.BBANDS(hist[close].values, timeperiod=60, nbdevup=2, nbdevdn=2, matype=MA_TYPE)    
-    hist['RSI'] = talib.RSI(hist[close], timeperiod=14)
-    hist['MACD'], hist['MACD Signal'], hist['MACD Hist'] = talib.MACD(hist[close], fastperiod=50, slowperiod=120, signalperiod=30)
-    
-    hist.drop(['MACD', 'MACD Signal'], axis=1, inplace=True)
-    gc.collect()
-    
-    # Calculate the difference between closing price and 200MA
-    hist['200MA Diff'] = (hist[close]-hist['200MA'])/hist['200MA']*100
-
-    # Calculate the mean and standard deviation of the differences
-    mean_diff = hist['200MA Diff'].mean()
-    std_diff = hist['200MA Diff'].std()
-
-    # Calculate the z-score
-    hist['200MA Diff Z-Score'] = (hist['200MA Diff'] - mean_diff) / std_diff
-    
-    hist.drop(['200MA Diff'], axis=1, inplace=True)
-    gc.collect()
-    
-    hist = hist.reset_index().tail(60)
-    
-    #print(hist)
-    
-    hist_dict = hist.to_dict(orient="records")
-    
-    financials = stock.financials.to_dict()
-    
-    options = stock.options[:5]
-    options_data = {}
-    for date in options:
-        opt = stock.option_chain(date)
-        options_data[date] = {
-            "calls": opt.calls.to_dict(orient="records"),
-            "puts": opt.puts.to_dict(orient="records")
-        }
-    
-    return {
-        "history": hist_dict,
-        "financials": financials,
-        "options": options_data
-    }
-
-
-
-
-################################################################################################################################################################
-@app.route('/analysis/', methods=['GET', 'POST'])
-def gemini_analysis():
-    gc.collect()
-  
-    genai.configure(api_key=gemini_api_key)
-  
-    analysis = None
-    error = None
-    ticker = ''
-    model_name = 'gemini-2.0-flash'  # 預設值
-
-    if request.method == 'POST':
-        ticker = request.form.get('ticker', '').strip()
-        model_name = request.form.get('model', 'gemini-2.0-flash')
-        
-        if not ticker:
-            error = "請輸入股票代碼"
-        else:
-            try:
-                stock_data = fetch_stock_data(ticker)
-                prompt = f"""
-請根據以下股票的歷史股價（含10MA, 20MA, 60MA, 150MA, 200MA, RSI, ATR, Volume, MACD Histogram, Bollinger Band, 200MA Diff Z-Score, Dividends）、財報與最近5期期權資料，產生一份個股分析報告，內容包含基本面、技術面與期權市場的觀察與建議。
-資料如下：
-{stock_data}
-"""
-                model = genai.GenerativeModel(model_name)
-                response = model.generate_content(prompt)
-                analysis = response.text
-
-                del response, model
-                gc.collect()
-                      
-            except Exception as e:
-                error = f"分析過程發生錯誤: {e}"
-
-    return render_template('analysis.html', analysis=analysis, error=error, ticker=ticker, model=model_name)
 
 
 
