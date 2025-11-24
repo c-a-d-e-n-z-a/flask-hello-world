@@ -32,6 +32,9 @@ macd_git_json = os.environ.get('MACD_GIT_JSON')
 # API KEY
 gemini_api_key =  os.environ.get('API_KEY')
 
+# Run environment
+run_env =  os.environ.get('RUN_ENV')
+
 # Query internal in minutes
 query_interval = 3
 
@@ -182,10 +185,7 @@ def index():
 def fire():
 
   gc.collect()
-
-  # Check if it's in GCP
-  IS_CLOUD = os.environ.get('K_SERVICE') is not None
-  
+ 
   #--------------------------------------------------------------------------------
   portfolio_cnt = 0
   portfolio_reload = 24
@@ -251,12 +251,7 @@ def fire():
   #--------------------------------------------------------------------------------
   timestamp_msg = datetime.strftime(now, '%H:%M:%S')
   msg_toast = []
-
-  if IS_CLOUD:
-    server_name = "GCP"
-  else:
-    server_name = "Render"
-  msg_toast.append(timestamp_msg + f' ({day+1}) - {server_name} (cnt={portfolio_cnt})')
+  msg_toast.append(timestamp_msg + f' ({day+1}) - {run_env} (cnt={portfolio_cnt})')
   print(msg_toast[0])
 
   
