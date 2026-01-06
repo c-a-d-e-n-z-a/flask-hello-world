@@ -1616,7 +1616,7 @@ GICS_SECTOR_CACHE = {}
 # Nasdaq 100 ICB Subsector 快取
 NDX_SUBSECTOR_CACHE = {}
 
-PTT_AUTHORS = ["sky22485816", "a000000000", "waitrop", "zmcx16", "Robertshih", "Test520", "zesonpso", "MrChen", "phcebus", "f204137", "a0808996", "IBIZA", "leo15824", "tosay", "LDPC", "nina801105", "mrp", "minazukimaya"]
+PTT_AUTHORS = ["sky22485816", "a000000000", "waitrop", "zmcx16", "Robertshih", "Test520", "zesonpso", "MrChen", "phcebus", "f204137", "a0808996", "IBIZA", "leo15824", "tosay", "LDPC", "nina801105", "mrp", "minazukimaya", "liliumeow"]
 
 DATA_CACHE = {"twse": None, "otc": None, "last_update": 0}
 CACHE_DURATION = 300
