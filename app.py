@@ -70,6 +70,8 @@ DELTA_I_A = 0.00382  # delta abs for index
 user_agent = 'Mozilla/5.0 (Macintosh; Intel Mac OS X 10_10_1) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/133.0.0.0 Safari/537.36'
 headers = {"User-Agent": user_agent}
 
+YAHOO_CRUMB = "dx7e5yMCafJ"
+
 #--------------------------------------------------------------------------------
 p_u = '\U0001F534'  # price mark 🔴
 p_d = '\U0001F7E2'  # price mark 🟢
@@ -93,7 +95,7 @@ def ma_calculation(ticker, session, use_adj=True):
       datetime.combine(endDate,
                        datetime.now().time()).timestamp())
 
-  crumb = "dx7e5yMCafJ"
+  crumb = YAHOO_CRUMB
   url_history = f"https://query1.finance.yahoo.com/v8/finance/chart/{ticker[0]}?period1={startDate_epoch}&period2={endDate_epoch}&interval=1d&events=history&includeAdjustedClose=true&events=div%2Csplits&crumb={crumb}"
   #print('  url=' + url_history)
 
@@ -114,19 +116,23 @@ def ma_calculation(ticker, session, use_adj=True):
             file=sys.stdout)
       return [None, None, None, None, None, None, None, None, None]
 
+    n = len(close)
     precision = 4 if close[-1] < 1 else 2
 
-    # Today
-    ma10 = round(sum(close[-10:]) / 10, precision)
-    ma20 = round(sum(close[-20:]) / 20, precision)
-    ma60 = round(sum(close[-60:]) / 60, precision)
-    ma200 = round(sum(close[-200:]) / 200, precision)
+    # Today (gradual: only calculate if enough data)
+    ma10  = round(sum(close[-10:]) / 10,   precision) if n >= 10  else None
+    ma20  = round(sum(close[-20:]) / 20,   precision) if n >= 20  else None
+    ma60  = round(sum(close[-60:]) / 60,   precision) if n >= 60  else None
+    ma200 = round(sum(close[-200:]) / 200, precision) if n >= 200 else None
 
-    # Yesterday
-    ma10_1 = round(sum(close[-11:-1]) / 10, precision)
-    ma20_1 = round(sum(close[-21:-1]) / 20, precision)
-    ma60_1 = round(sum(close[-61:-1]) / 60, precision)
-    ma200_1 = round(sum(close[-201:-1]) / 200, precision)
+    # Yesterday (need one extra data point)
+    ma10_1  = round(sum(close[-11:-1]) / 10,   precision) if n >= 11  else None
+    ma20_1  = round(sum(close[-21:-1]) / 20,   precision) if n >= 21  else None
+    ma60_1  = round(sum(close[-61:-1]) / 60,   precision) if n >= 61  else None
+    ma200_1 = round(sum(close[-201:-1]) / 200, precision) if n >= 201 else None
+
+    if n < 200:
+      print(f'{ticker[0]}: Only {n} data points, MA200 unavailable', file=sys.stdout)
 
     return [None, ma10, ma20, ma60, ma200, ma10_1, ma20_1, ma60_1, ma200_1]
 
@@ -167,6 +173,8 @@ def get_fitx_histock(session):
 
 
 
+_fire_timestamp = [30, 450, 810, 1290]  # persists across requests
+
 ################################################################################################################################################################
 app = Flask(__name__)
 
@@ -185,15 +193,17 @@ def index():
 @app.route('/fire/')
 def fire():
 
+  global _fire_timestamp
+
   gc.collect()
- 
+
   #--------------------------------------------------------------------------------
   portfolio_cnt = 0
   portfolio_reload = 24
   leisure_time = False
   macd_w_is_fall = {}
 
-  timestamp = [30, 450, 810, 1290]  # 00:30, 07:30, 13:30, 21:30
+  timestamp = _fire_timestamp  # use persisted value; updated when JSON loads
 
   portfolio = [["2454.TW", 820, 1200], ["2330.TW", 1000, 1200]]
 
@@ -234,10 +244,10 @@ def fire():
   # For leisure hours, reduce report frequency (weekend, 13:30 (810) ~ 21:30 (1290))
   if (day > 4) or ((mins > timestamp[2] + query_interval*3) and (mins < timestamp[3] - query_interval*3)):
     leisure_time = True
-    portfolio_reload = 240 / query_interval  # 4H
+    portfolio_reload = 240 // query_interval  # 4H
   else:
     leisure_time = False
-    portfolio_reload = 120 / query_interval  # 2H
+    portfolio_reload = 120 // query_interval  # 2H
 
   # Reset portolio to trigee full report, like @13:33 and @21:27 (TW stock close, and before US open), and always reset @7:30
   if (day < 5 and ((mins == timestamp[2] + query_interval) or (mins == timestamp[3] - query_interval))) or (mins == 450):
@@ -268,6 +278,7 @@ def fire():
       json_git = r.json()
 
       timestamp = json_git["timestamp"]
+      _fire_timestamp = timestamp
       print(f'\nLoad timestamp: {timestamp}')
 
       reset_portfolio = False
@@ -300,7 +311,7 @@ def fire():
       if reset_portfolio == True:
         p.extend(ma)
       else:
-        p[IDX_10MA:-1] = ma[1:]
+        p[IDX_10MA:IDX_10MA+8] = ma[1:]
 
       print(p)
 
@@ -346,7 +357,7 @@ def fire():
         sdp = yahoo_portfolio[x]['changePercent']
 
         # Add color symbole as prefix
-        if sd[0] == '-':
+        if str(sd)[0] == '-':
           sc = p_d
         else:
           sc = p_u
@@ -615,8 +626,6 @@ def fire():
   else:
     return msg_toast[0]
 
-  gc.collect()
-
 
 
 ################################################################################################################################################################
@@ -630,7 +639,7 @@ def fire():
 
 
 ################################################################################################################################################################
-def get_stock_data(ticker, start_date, end_date, session, crumb="F7GXvns0Eji"):
+def get_stock_data(ticker, start_date, end_date, session, crumb=YAHOO_CRUMB):
 
   start_epoch = int(datetime.combine(start_date, datetime.min.time()).timestamp())
   end_epoch = int(datetime.combine(end_date, datetime.min.time()).timestamp())
