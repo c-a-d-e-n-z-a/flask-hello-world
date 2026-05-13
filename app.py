@@ -54,7 +54,8 @@ IDX_10MA_1 = 8  # 10MA yesterday
 IDX_20MA_1 = 9  # 20MA yesterday
 IDX_60MA_1 = 10  # 60MA yesterday
 IDX_200MA_1 = 11  # 200MA yesterday
-IDX_MSG = 12  # message saved, not check duplicate message, obsolete now
+IDX_STD200 = 12  # 200-day standard deviation
+IDX_MSG = 13  # message saved, not check duplicate message, obsolete now
 
 DELTA_U = 0.01618  # delta up
 DELTA_D = -0.01618  # delta down
@@ -125,6 +126,13 @@ def ma_calculation(ticker, session, use_adj=True):
     ma60  = round(sum(close[-60:]) / 60,   precision) if n >= 60  else None
     ma200 = round(sum(close[-200:]) / 200, precision) if n >= 200 else None
 
+    # 200-day standard deviation
+    if n >= 200:
+      mean200 = sum(close[-200:]) / 200
+      std200 = round((sum((x - mean200) ** 2 for x in close[-200:]) / 200) ** 0.5, precision)
+    else:
+      std200 = None
+
     # Yesterday (need one extra data point)
     ma10_1  = round(sum(close[-11:-1]) / 10,   precision) if n >= 11  else None
     ma20_1  = round(sum(close[-21:-1]) / 20,   precision) if n >= 21  else None
@@ -134,7 +142,7 @@ def ma_calculation(ticker, session, use_adj=True):
     if n < 200:
       print(f'{ticker[0]}: Only {n} data points, MA200 unavailable', file=sys.stdout)
 
-    return [None, ma10, ma20, ma60, ma200, ma10_1, ma20_1, ma60_1, ma200_1]
+    return [None, ma10, ma20, ma60, ma200, ma10_1, ma20_1, ma60_1, ma200_1, std200]
 
   else:
 
@@ -311,7 +319,7 @@ def fire():
       if reset_portfolio == True:
         p.extend(ma)
       else:
-        p[IDX_10MA:IDX_10MA+8] = ma[1:]
+        p[IDX_10MA:IDX_10MA+9] = ma[1:]
 
       print(p)
 
@@ -407,9 +415,10 @@ def fire():
               print(f"{s} SDP: {sdp_base} {sdp} {sdp_base_tw} {sdp_base_us}",
                     file=sys.stdout)
 
-          # 200MA diff
-          if portfolio[i + c][IDX_200MA] != None:
-            sdp_radio += f" {((price-portfolio[i+c][IDX_200MA])/portfolio[i+c][IDX_200MA])*100  :.1f}%"
+          # 200MA diff (z-score)
+          if portfolio[i + c][IDX_200MA] != None and portfolio[i + c][IDX_STD200] != None and portfolio[i + c][IDX_STD200] != 0:
+            z_score = (price - portfolio[i+c][IDX_200MA]) / portfolio[i+c][IDX_STD200]
+            sdp_radio += f" {z_score:+.1f}σ"
 
           msg = ''
 
