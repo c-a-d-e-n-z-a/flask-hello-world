@@ -111,11 +111,18 @@ def ma_calculation(ticker, session, use_adj=True):
     else:
       close = json_history["chart"]["result"][0]["indicators"]["quote"][0]["close"]
 
-    # Avoid nonetype calcuation
-    if None in close:
-      print(f'{ticker[0]}:\n  None in price list: {url_history}',
-            file=sys.stdout)
-      return [None, None, None, None, None, None, None, None, None]
+    # Forward-fill None gaps (Yahoo API occasionally returns sparse data)
+    none_count = close.count(None)
+    if none_count > 0:
+      print(f'{ticker[0]}: {none_count} None(s) in price list, forward-filling', file=sys.stdout)
+      for k in range(1, len(close)):
+        if close[k] is None:
+          close[k] = close[k - 1]
+      # Remove leading Nones (no previous value to fill from)
+      while close and close[0] is None:
+        close.pop(0)
+      if len(close) == 0:
+        return [None, None, None, None, None, None, None, None, None, None]
 
     n = len(close)
     precision = 4 if close[-1] < 1 else 2
