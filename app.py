@@ -106,10 +106,15 @@ def ma_calculation(ticker, session, use_adj=True):
     r.encoding = 'utf-8'
     json_history = r.json()
 
+    close_raw = json_history["chart"]["result"][0]["indicators"]["quote"][0]["close"]
     if use_adj == True:
       close = json_history["chart"]["result"][0]["indicators"]["adjclose"][0]["adjclose"]
+      # Fallback to close if adjclose has more Nones
+      if None in close and close.count(None) > close_raw.count(None):
+        print(f'{ticker[0]}: adjclose has {close.count(None)} None(s), falling back to close ({close_raw.count(None)})', file=sys.stdout)
+        close = close_raw
     else:
-      close = json_history["chart"]["result"][0]["indicators"]["quote"][0]["close"]
+      close = close_raw
 
     # Forward-fill None gaps (Yahoo API occasionally returns sparse data)
     none_count = close.count(None)
