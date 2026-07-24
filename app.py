@@ -229,6 +229,25 @@ def fire():
 
   url_tg_prefix = f'https://api.telegram.org/bot{bot_token}/sendMessage?chat_id={chat_id}&text='
   url_tg_getUpdate = f'https://api.telegram.org/bot{bot_token}/getupdates?offset=-1'
+
+  def send_telegram_html(msg, session=None):
+    if not bot_token or not chat_id:
+      return
+    url_tg = f"https://api.telegram.org/bot{bot_token}/sendMessage"
+    payload = {
+      "chat_id": chat_id,
+      "text": msg,
+      "parse_mode": "HTML",
+      "disable_web_page_preview": False
+    }
+    try:
+      s = session if session else requests
+      resp = s.post(url_tg, json=payload, timeout=5)
+      if resp.status_code != 200:
+        payload["parse_mode"] = None
+        s.post(url_tg, json=payload, timeout=5)
+    except Exception as e:
+      print(f"[TG Error] {e}")
   json_file_path = "data.json"
   pcnt_file_path = "pcnt.pkl"
 
@@ -596,18 +615,18 @@ def fire():
               if (l_c_u in msg) or (l_c_d in msg):
                 ticker = portfolio[i + c][IDX_T]
                 url_chart = ''
+                ts = int(time.time())
                 if '^' in ticker or '-' in ticker or '=' in ticker or '.S' in ticker or '.HK' in ticker:  # Skip index
                   pass
                 elif '.TW' in ticker:  # TW
                   t = ticker[:ticker.index('.')]
-                  #url_chart = f'https://goodinfo.tw/StockInfo/image/StockPrice/PRICE_DATE_{t}.gif'
-                  url_chart = f'https://stock.wearn.com/finance_chart.asp?stockid={t}&timeblock=365&sma1=10&sma2=20&sma3=60&volume=1'
+                  url_chart = f'https://stock.wearn.com/finance_chart.asp?stockid={t}&timeblock=365&sma1=10&sma2=20&sma3=60&volume=1&_t={ts}'
                 else:  # US
                   t = ticker
-                  url_chart = f'https://charts2.finviz.com/chart.ashx?t={t}&ta=1&ty=c&p=d&s=l'  # technical chart
+                  url_chart = f'https://charts2.finviz.com/chart.ashx?t={t}&ta=1&ty=c&p=d&s=l&_t={ts}'  # technical chart
 
                 if url_chart != '':
-                  msg += f'%0A{url_chart}%0A'
+                  msg += f'\n{url_chart}\n'
 
               msg_toast.append(msg)
 
@@ -633,14 +652,11 @@ def fire():
 
     print('\n--------------------------------------------------------------------------------')
     #print('\n'.join(msg_toast))
-    s_len = 10
-    for s in range(0, len(msg_toast),
-                   s_len):  # if send all in one batch, TG will fail
+    s_len = 5
+    for s in range(0, len(msg_toast), s_len):  # Send in compact batches
       msg_segment = msg_toast[s:s + s_len]
-
-      url_tg = url_tg_prefix + ('%0A'.join(msg_segment)).replace(
-          '&', '%26')  # Handle '&' in url
-      r = session.get(url_tg, headers=headers, timeout=2)
+      batch_msg = '\n'.join(msg_segment).replace('%0A', '\n')
+      send_telegram_html(batch_msg, session=session)
 
     return ('<br>'.join(msg_toast)).replace('%0A', '<br>')
 
