@@ -227,8 +227,9 @@ def fire():
 
   portfolio = [["2454.TW", 820, 1200], ["2330.TW", 1000, 1200]]
 
-  url_tg_prefix = f'https://api.telegram.org/bot{bot_token}/sendMessage?chat_id={chat_id}&text='
-  url_tg_getUpdate = f'https://api.telegram.org/bot{bot_token}/getupdates?offset=-1'
+  BASE_DIR = os.path.dirname(os.path.abspath(__file__))
+  json_file_path = os.path.join(BASE_DIR, "data.json")
+  pcnt_file_path = os.path.join(BASE_DIR, "pcnt.pkl")
 
   def send_telegram_html(msg, session=None):
     if not bot_token or not chat_id:
@@ -248,8 +249,6 @@ def fire():
         s.post(url_tg, json=payload, timeout=5)
     except Exception as e:
       print(f"[TG Error] {e}")
-  json_file_path = "data.json"
-  pcnt_file_path = "pcnt.pkl"
 
   #--------------------------------------------------------------------------------
   #now = datetime.now()
@@ -384,19 +383,21 @@ def fire():
     if r.status_code == 200:
       r.encoding = 'utf-8'
       yahoo_portfolio = r.json()
+      ticker_map = {portfolio[c + i][IDX_T]: c + i for i in range(len(chunk))}
 
       for x, jp in enumerate(yahoo_portfolio):
-        s = yahoo_portfolio[x]['symbol']
-        sn = (yahoo_portfolio[x]['symbolName'].split(' '))[0]
+        s = jp.get('symbol', '')
+        symbol_name = jp.get('symbolName', s)
+        sn = (symbol_name.split(' '))[0] if symbol_name else s
 
-        if 'change' not in yahoo_portfolio[x]:
+        if 'change' not in jp:
           continue
 
-        sd = yahoo_portfolio[x]['change']['raw']
-        sdp = yahoo_portfolio[x]['changePercent']
+        sd = jp['change'].get('raw', 0)
+        sdp = jp.get('changePercent', '-')
 
-        # Add color symbole as prefix
-        if str(sd)[0] == '-':
+        # Add color symbol as prefix
+        if str(sd).startswith('-'):
           sc = p_d
         else:
           sc = p_u
@@ -406,229 +407,215 @@ def fire():
         if s == "^GSPC":
           sdp_base_us = sdp
 
-        # Symbols could be received in out-of-order, need match index
-        for i in range(0, len(tickers)):
-          #print(f'{i} {c} {i+c} {x} {s} {portfolio[i+c][0]}')
+        # O(1) Hash map ticker lookup
+        if s not in ticker_map:
+          continue
+        port_idx = ticker_map[s]
 
-          if s != portfolio[i + c][IDX_T]:
-            continue  # Check symobol name match
+        if jp.get('price', {}).get('raw') == '-':
+          price = float(jp.get('regularMarketPreviousClose', {}).get('raw', 0))
+        else:
+          price = float(jp.get('price', {}).get('raw', 0))
 
-          if yahoo_portfolio[x]['price']['raw'] == '-':
-            price = float(
-                yahoo_portfolio[x]['regularMarketPreviousClose']['raw'])
-          else:
-            price = float(yahoo_portfolio[x]['price']['raw'])
+        try:
+          price_1 = float(jp.get('regularMarketPreviousClose', {}).get('raw', price))
+        except (ValueError, TypeError):
+          price_1 = price
 
+        sdp_base = sdp_base_tw if ".TW" in s else sdp_base_us
+        if sdp_base is None:
+          sdp_base = sdp
+
+        # ^TWII & ^GSPC index comparison
+        sdp_radio = '?'
+        if sdp_base not in (None, '-') and sdp not in (None, '-'):
           try:
-            price_1 = float(yahoo_portfolio[x]['regularMarketPreviousClose']['raw'])
-          except ValueError:
-            price_1 = price
-
-          #print(f"{yahoo_portfolio[x]['symbol']}: {price}")
-
-          sdp_base = None
-          if ".TW" in s:
-            sdp_base = sdp_base_tw
-          else:
-            sdp_base = sdp_base_us
-
-          if sdp_base == None:
-            sdp_base = sdp
-
-          # ^TWII & ^GSPC index comparison
-          sdp_radio = '?'
-          if (sdp_base != '-') and (sdp != '-'):
-            if float(sdp_base.strip('%')) != 0:
-              sdp_ratio_float = float(sdp.strip('%')) / float(
-                  sdp_base.strip('%'))
+            base_val = float(str(sdp_base).strip('%'))
+            curr_val = float(str(sdp).strip('%'))
+            if base_val != 0:
+              sdp_ratio_float = curr_val / base_val
               sdp_radio = f"{sdp_ratio_float:.1f}x"
             else:
-              print(f"{s} SDP: {sdp_base} {sdp} {sdp_base_tw} {sdp_base_us}",
-                    file=sys.stdout)
+              print(f"{s} SDP: {sdp_base} {sdp} {sdp_base_tw} {sdp_base_us}", file=sys.stdout)
+          except (ValueError, TypeError, ZeroDivisionError):
+            sdp_radio = '?'
 
-          # 200MA diff (z-score)
-          if portfolio[i + c][IDX_200MA] != None and portfolio[i + c][IDX_STD200] != None and portfolio[i + c][IDX_STD200] != 0:
-            z_score = (price - portfolio[i+c][IDX_200MA]) / portfolio[i+c][IDX_STD200]
-            sdp_radio += f" {z_score:+.1f}σ"
+        # 200MA diff (z-score)
+        if portfolio[port_idx][IDX_200MA] is not None and portfolio[port_idx][IDX_STD200] is not None and portfolio[port_idx][IDX_STD200] != 0:
+          z_score = (price - portfolio[port_idx][IDX_200MA]) / portfolio[port_idx][IDX_STD200]
+          sdp_radio += f" {z_score:+.1f}σ"
 
-          msg = ''
+        msg = ''
 
-          s_dot = s.find('.')
-          #if s_dot > -1:
-          #  s = s[:s_dot]
+        s_dot = s.find('.')
+        #if s_dot > -1:
+        #  s = s[:s_dot]
 
-          precision = 4 if price < 1 else 2
+        precision = 4 if price < 1 else 2
 
-          if portfolio[i + c][IDX_P] != None:  # Already has history record
+        safe_s = html.escape(s)
+        safe_sn = html.escape(sn)
+        safe_sdp_radio = html.escape(sdp_radio)
+        base_hdr = f"<b>{sc} {safe_s} ({safe_sn})</b> [<b>{sdp}</b> {safe_sdp_radio}]"
 
-            delta = (price - portfolio[i + c][IDX_P]) / portfolio[i + c][IDX_P]
+        if portfolio[port_idx][IDX_P] is not None:  # Already has history record
+          delta = (price - portfolio[port_idx][IDX_P]) / portfolio[port_idx][IDX_P]
 
-            if delta >= 0:
-              sc = sc + a_u
-            else:
-              sc = sc + a_d
+          if delta >= 0:
+            sc = sc + a_u
+          else:
+            sc = sc + a_d
+          base_hdr = f"<b>{sc} {safe_s} ({safe_sn})</b> [<b>{sdp}</b> {safe_sdp_radio}]"
 
-            update_flag = False
+          update_flag = False
 
-            # Set criteria
-            if s.find("-USD") > -1:  # Crypto delta
-              delta_u = DELTA_C_U
-              delta_d = DELTA_C_D
-              delta_a = DELTA_C_A
-            else:
-              delta_u = DELTA_U
-              delta_d = DELTA_D
-              delta_a = DELTA_A
+          # Set criteria
+          if s.find("-USD") > -1:  # Crypto delta
+            delta_u = DELTA_C_U
+            delta_d = DELTA_C_D
+            delta_a = DELTA_C_A
+          else:
+            delta_u = DELTA_U
+            delta_d = DELTA_D
+            delta_a = DELTA_A
 
-            if s in [
-                "^TWII", "^TWOII", "^GSPC", "^RUT", "^N225", "^KS11", "VOO",
-                "QQQ", "000300.SS"
-            ]:
-              delta_u = DELTA_I_U
-              delta_d = DELTA_I_D
-              delta_a = DELTA_I_A
+          if s in [
+              "^TWII", "^TWOII", "^GSPC", "^RUT", "^N225", "^KS11", "VOO",
+              "QQQ", "000300.SS"
+          ]:
+            delta_u = DELTA_I_U
+            delta_d = DELTA_I_D
+            delta_a = DELTA_I_A
 
-            # Judge criteria
-            if delta > delta_u:
-              msg = f"{sc}{s} ({sn}) [{sd} {sdp} {sdp_radio}]: {price:.{precision}f} {delta*100:.{precision}f}% ▲"  # Check quick +1.618% price change
+          # Judge criteria
+          if delta > delta_u:
+            msg = f"{base_hdr}: <code>${price:.{precision}f}</code> 🔥 <b>+{delta*100:.{precision}f}% ▲</b>"  # Check quick +1.618% price change
+            update_flag = True
+
+          if delta < delta_d:
+            msg = f"{base_hdr}: <code>${price:.{precision}f}</code> ❄️ <b>{delta*100:.{precision}f}% ▼</b>"  # Check quick -1.618% price change
+            update_flag = True
+
+          # Skip small price variation (0.618%)
+          if abs(delta) > delta_a:  # Smooth report, only report when variation > 0.618%
+            if price < portfolio[port_idx][IDX_F]:  # Check low price
+              msg = f"{base_hdr}: <code>${price:.{precision}f}</code> ({delta*100:+.2f}%) ⚠️ <b>&lt; {portfolio[port_idx][IDX_F]}</b>"
               update_flag = True
 
-            if delta < delta_d:
-              msg = f"{sc}{s} ({sn}) [{sd} {sdp} {sdp_radio}]: {price:.{precision}f} {delta*100:.{precision}f}% ▼"  # Check quick -1.618% price change
+            if price > portfolio[port_idx][IDX_C]:  # Check high price
+              msg = f"{base_hdr}: <code>${price:.{precision}f}</code> ({delta*100:+.2f}%) 🚀 <b>&gt; {portfolio[port_idx][IDX_C]}</b>"
               update_flag = True
 
-            # Skip small price variation (0.618%)
-            if abs(
-                delta
-            ) > delta_a:  # Smooth report, only report when variation > 0.618%
-              if price < portfolio[i + c][IDX_F]:  # Check low price
-                msg = f"{sc}{s} ({sn}) [{sd} {sdp} {sdp_radio}]: {price:.{precision}f} {delta*100:.{precision}f}% < {portfolio[i+c][IDX_F]}"
-                update_flag = True
+          if update_flag == True:
+            portfolio[port_idx][IDX_P] = price  # To save curent price
 
-              if price > portfolio[i + c][IDX_C]:  # Check high price
-                msg = f"{sc}{s} ({sn}) [{sd} {sdp} {sdp_radio}]: {price:.{precision}f} {delta*100:.{precision}f}% > {portfolio[i+c][IDX_C]}"
-                update_flag = True
+        else:  # 1st time get price and msg
+          if price < portfolio[port_idx][IDX_F]:  # Check low price
+            msg = f"{base_hdr}: <code>${price:.{precision}f}</code> ⚠️ <b>&lt; {portfolio[port_idx][IDX_F]}</b>"
 
-            if update_flag == True:
-              portfolio[i + c][IDX_P] = price  # To save curent price
-            """
-            if msg != "":
-              print(f"{yahoo_portfolio[x]['symbol']}: {price} -- {delta:.5f} {update_flag} {msg}")
-            """
+          elif price > portfolio[port_idx][IDX_C]:  # Check high price
+            msg = f"{base_hdr}: <code>${price:.{precision}f}</code> 🚀 <b>&gt; {portfolio[port_idx][IDX_C]}</b>"
 
-          else:  # 1st time get price and msg
+          else:
+            msg = f"{base_hdr}: <code>${price:.{precision}f}</code>"
 
-            if price < portfolio[i + c][IDX_F]:  # Check low price
-              msg = f"{sc}{s} ({sn}) [{sd} {sdp} {sdp_radio}]: {price:.{precision}f} < {portfolio[i+c][IDX_F]}"
+          portfolio[port_idx][IDX_P] = price  # To append curent price (new list item)
 
-            elif price > portfolio[i + c][IDX_C]:  # Check high price
-              msg = f"{sc}{s} ({sn}) [{sd} {sdp} {sdp_radio}]: {price:.{precision}f} > {portfolio[i+c][IDX_C]}"
+        if msg != '':
+          msg_updated = True  # Remove stored msg to save the heap size
 
-            else:
-              msg = f"{sc}{s} ({sn}) [{sd} {sdp} {sdp_radio}]: {price:.{precision}f}"
+          if msg_updated == True:
+            # Check if SMA cross (today vs. yesterday)
+            ma10 = portfolio[port_idx][IDX_10MA]
+            ma20 = portfolio[port_idx][IDX_20MA]
+            ma60 = portfolio[port_idx][IDX_60MA]
+            ma200 = portfolio[port_idx][IDX_200MA]
+            ma10_1 = portfolio[port_idx][IDX_10MA_1]
+            ma20_1 = portfolio[port_idx][IDX_20MA_1]
+            ma60_1 = portfolio[port_idx][IDX_60MA_1]
+            ma200_1 = portfolio[port_idx][IDX_200MA_1]
 
-            portfolio[
-                i + c][IDX_P] = price  # To append curent price (new list item)
+            price_low = portfolio[port_idx][IDX_F]
+            price_high = portfolio[port_idx][IDX_C]
 
+            # Floor/Ceilng cross
+            if price_low is not None:
+              if (price > price_low) and (price_1 <= price_low):
+                msg += f' {l_c_u}<b>L={price_low:.{precision}f}</b>'
+              if (price < price_low) and (price_1 >= price_low):
+                msg += f' {l_c_d}<b>L={price_low:.{precision}f}</b>'
+            if price_high is not None:
+              if (price > price_high) and (price_1 <= price_high):
+                msg += f' {l_c_u}<b>H={price_high:.{precision}f}</b>'
+              if (price < price_high) and (price_1 >= price_high):
+                msg += f' {l_c_d}<b>H={price_high:.{precision}f}</b>'
 
-          if msg != '':
-            msg_updated = True  # Remove stored msg to save the heap size
+            # SMA trend
+            if ma10_1 is not None:
+              if (price > ma10) and (price_1 <= ma10_1):
+                msg += f' {l_c_u}<b>MA10={ma10:.{precision}f}</b>'
+              if (price < ma10) and (price_1 >= ma10_1):
+                msg += f' {l_c_d}<b>MA10={ma10:.{precision}f}</b>'
 
-            if msg_updated == True:
+                if portfolio[port_idx][IDX_T] in macd_w_is_fall:
+                  if macd_w_is_fall[portfolio[port_idx][IDX_T]] == True:  # SMA10 cross and weekly MACD is fall
+                    msg += ' <b>[MACD Fall]</b>'
 
-              # Check if SMA cross (today vs. yesterday)
-              ma10 = portfolio[i + c][IDX_10MA]
-              ma20 = portfolio[i + c][IDX_20MA]
-              ma60 = portfolio[i + c][IDX_60MA]
-              ma200 = portfolio[i + c][IDX_200MA]
-              ma10_1 = portfolio[i + c][IDX_10MA_1]
-              ma20_1 = portfolio[i + c][IDX_20MA_1]
-              ma60_1 = portfolio[i + c][IDX_60MA_1]
-              ma200_1 = portfolio[i + c][IDX_200MA_1]
+            if ma20_1 is not None:
+              if (price > ma20) and (price_1 <= ma20_1):
+                msg += f' {l_c_u}<b>MA20={ma20:.{precision}f}</b>'
+              if (price < ma20) and (price_1 >= ma20_1):
+                msg += f' {l_c_d}<b>MA20={ma20:.{precision}f}</b>'
+                if ma10 > ma20:
+                  msg += ' <b>[JUMP Fall]</b>'
 
-              price_low = portfolio[i + c][IDX_F]
-              price_high = portfolio[i + c][IDX_C]
+            if ma60_1 is not None:
+              if (price > ma60) and (price_1 <= ma60_1):
+                msg += f' {l_c_u}<b>MA60={ma60:.{precision}f}</b>'
+              if (price < ma60) and (price_1 >= ma60_1):
+                msg += f' {l_c_d}<b>MA60={ma60:.{precision}f}</b>'
 
-              # Floor/Ceilng cross
-              if price_low != None:
-                if (price > price_low) and (price_1 <= price_low):
-                  msg += f'{l_c_u}L={price_low:.{precision}f}'
-                if (price < price_low) and (price_1 >= price_low):
-                  msg += f'{l_c_d}L={price_low:.{precision}f}'
-              if price_high != None:
-                if (price > price_high) and (price_1 <= price_high):
-                  msg += f'{l_c_u}H={price_high:.{precision}f}'
-                if (price < price_high) and (price_1 >= price_high):
-                  msg += f'{l_c_d}H={price_high:.{precision}f}'
+            if ma200_1 is not None:
+              if (price > ma200) and (price_1 <= ma200_1):
+                msg += f' {l_c_u}<b>MA200={ma200:.{precision}f}</b>'
+              if (price < ma200) and (price_1 >= ma200_1):
+                msg += f' {l_c_d}<b>MA200={ma200:.{precision}f}</b>'
 
-              # SMA trend
-              if ma10_1 != None:
-                if (price > ma10) and (price_1 <= ma10_1):
-                  msg += f'{l_c_u}MA10={ma10:.{precision}f}'
-                if (price < ma10) and (price_1 >= ma10_1):
-                  msg += f'{l_c_d}MA10={ma10:.{precision}f}'
-                  msg = msg[0] + msg
+            # SMA cross
+            if (ma60_1 is not None) and (ma10_1 is not None):
+              if (ma10 > ma60) and (ma10_1 <= ma60_1):
+                msg += f' {l_c_u}<b>MA1060={ma10:.{precision}f},{ma60:.{precision}f}</b>'
+              if (ma10 < ma60) and (ma10_1 >= ma60_1):
+                msg += f' {l_c_d}<b>MA1060={ma10:.{precision}f},{ma60:.{precision}f}</b>'
+            if (ma20_1 is not None) and (ma10_1 is not None):
+              if (ma10 > ma20) and (ma10_1 <= ma20_1):
+                msg += f' {l_c_u}<b>MA1020={ma10:.{precision}f},{ma20:.{precision}f}</b>'
+              if (ma10 < ma20) and (ma10_1 >= ma20_1):
+                msg += f' {l_c_d}<b>MA1020={ma10:.{precision}f},{ma20:.{precision}f}</b>'
+            if (ma60_1 is not None) and (ma20_1 is not None):
+              if (ma20 > ma60) and (ma20_1 <= ma60_1):
+                msg += f' {l_c_u}<b>MA2060={ma20:.{precision}f},{ma60:.{precision}f}</b>'
+              if (ma20 < ma60) and (ma20_1 >= ma60_1):
+                msg += f' {l_c_d}<b>MA2060={ma20:.{precision}f},{ma60:.{precision}f}</b>'
 
-                  if portfolio[i + c][IDX_T] in macd_w_is_fall:
-                    if macd_w_is_fall[portfolio[i + c][
-                        IDX_T]] == True:  # SMA10 cross and weekly MACD is fall
-                      msg = msg[0] + msg + ' MACD Fall'
+            # Add chart
+            if (l_c_u in msg) or (l_c_d in msg):
+              ticker = portfolio[port_idx][IDX_T]
+              url_chart = ''
+              ts = int(time.time())
+              if '^' in ticker or '-' in ticker or '=' in ticker or '.S' in ticker or '.HK' in ticker:  # Skip index
+                pass
+              elif '.TW' in ticker:  # TW
+                t = ticker[:ticker.index('.')]
+                url_chart = f'https://stock.wearn.com/finance_chart.asp?stockid={t}&timeblock=365&sma1=10&sma2=20&sma3=60&volume=1&_t={ts}'
+              else:  # US
+                t = ticker
+                url_chart = f'https://charts2.finviz.com/chart.ashx?t={t}&ta=1&ty=c&p=d&s=l&_t={ts}'  # technical chart
 
-              if ma20_1 != None:
-                if (price > ma20) and (price_1 <= ma20_1):
-                  msg += f'{l_c_u}MA20={ma20:.{precision}f}'
-                if (price < ma20) and (price_1 >= ma20_1):
-                  msg += f'{l_c_d}MA20={ma20:.{precision}f}'
-                  if ma10 > ma20:
-                    msg = msg[0] + msg + ' JUMP Fall'
+              if url_chart != '':
+                msg += f'\n{url_chart}\n'
 
-              if ma60_1 != None:
-                if (price > ma60) and (price_1 <= ma60_1):
-                  msg += f'{l_c_u}MA60={ma60:.{precision}f}'
-                if (price < ma60) and (price_1 >= ma60_1):
-                  msg += f'{l_c_d}MA60={ma60:.{precision}f}'
-
-              if (ma200_1 != None):
-                if (price > ma200) and (price_1 <= ma200_1):
-                  msg += f'{l_c_u}MA200={ma200:.{precision}f}'
-                if (price < ma200) and (price_1 >= ma200_1):
-                  msg += f'{l_c_d}MA200={ma200:.{precision}f}'
-
-              # SMA cross
-              if (ma60_1 != None) and (ma10_1 != None):
-                if (ma10 > ma60) and (ma10_1 <= ma60_1):
-                  msg += f'{l_c_u}MA1060={ma10:.{precision}f}, {ma60:.{precision}f}'
-                if (ma10 < ma60) and (ma10_1 >= ma60_1):
-                  msg += f'{l_c_d}MA1060={ma10:.{precision}f}, {ma60:.{precision}f}'
-              if (ma20_1 != None) and (ma10_1 != None):
-                if (ma10 > ma20) and (ma10_1 <= ma20_1):
-                  msg += f'{l_c_u}MA1020={ma10:.{precision}f}, {ma20:.{precision}f}'
-                if (ma10 < ma20) and (ma10_1 >= ma20_1):
-                  msg += f'{l_c_d}MA1020={ma10:.{precision}f}, {ma20:.{precision}f}'
-              if (ma60_1 != None) and (ma20_1 != None):
-                if (ma20 > ma60) and (ma20_1 <= ma60_1):
-                  msg += f'{l_c_u}MA2060={ma20:.{precision}f}, {ma60:.{precision}f}'
-                if (ma20 < ma60) and (ma20_1 >= ma60_1):
-                  msg += f'{l_c_d}MA2060={ma20:.{precision}f}, {ma60:.{precision}f}'
-
-              # Add chart
-              if (l_c_u in msg) or (l_c_d in msg):
-                ticker = portfolio[i + c][IDX_T]
-                url_chart = ''
-                ts = int(time.time())
-                if '^' in ticker or '-' in ticker or '=' in ticker or '.S' in ticker or '.HK' in ticker:  # Skip index
-                  pass
-                elif '.TW' in ticker:  # TW
-                  t = ticker[:ticker.index('.')]
-                  url_chart = f'https://stock.wearn.com/finance_chart.asp?stockid={t}&timeblock=365&sma1=10&sma2=20&sma3=60&volume=1&_t={ts}'
-                else:  # US
-                  t = ticker
-                  url_chart = f'https://charts2.finviz.com/chart.ashx?t={t}&ta=1&ty=c&p=d&s=l&_t={ts}'  # technical chart
-
-                if url_chart != '':
-                  msg += f'\n{url_chart}\n'
-
-              msg_toast.append(msg)
+            msg_toast.append(msg)
 
     else:
       print(f"\nRead error: {r.status_code}")
