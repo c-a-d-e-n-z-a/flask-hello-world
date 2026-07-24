@@ -8,4 +8,3 @@ pyecharts
 yfinance
 ta-lib-everywhere
 google.generativeai
-html
