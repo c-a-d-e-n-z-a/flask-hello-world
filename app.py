@@ -1,3 +1,4 @@
+import base64
 import gc
 import html
 import json
@@ -11,7 +12,7 @@ from zoneinfo import ZoneInfo
 
 #import requests
 from curl_cffi import requests
-from flask import Flask, render_template, request
+from flask import Flask, render_template, render_template_string, jsonify, request
 import yfinance as yf
 import pandas as pd
 import numpy as np
@@ -27,9 +28,14 @@ from pyecharts.charts import Line
 bot_token = os.environ.get('BOT_TOKEN')
 chat_id = os.environ.get('CHAT_ID')
 
-# Json url
-url_git_json = os.environ.get('URL_GIT_JSON')
+# Json urls & API endpoints
+url_git_json = os.environ.get('URL_GIT_JSON') or 'https://github.com/c-a-d-e-n-z-a/json/raw/refs/heads/main/portfolio.json'
+url_git_json_review = os.environ.get('URL_GIT_JSON_REVIEW') or 'https://github.com/c-a-d-e-n-z-a/json/raw/refs/heads/main/portfolio_review.json'
 macd_git_json = os.environ.get('MACD_GIT_JSON')
+
+token_git_json = os.environ.get('TOKEN_GIT_JSON')
+content_git_json = os.environ.get('CONTENT_GIT_JSON') or 'https://api.github.com/repos/c-a-d-e-n-z-a/json/contents/portfolio.json'
+content_git_json_review = os.environ.get('CONTENT_GIT_JSON_REVIEW') or 'https://api.github.com/repos/c-a-d-e-n-z-a/json/contents/portfolio_review.json'
 
 # API KEY
 gemini_api_key =  os.environ.get('API_KEY')
@@ -1098,6 +1104,813 @@ def maxpain():
         chart=chart,
         error=error
     )
+
+
+
+
+JSON_EDITOR_HTML = """<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>GitHub Portfolio Studio</title>
+    <link rel="preconnect" href="https://fonts.googleapis.com">
+    <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+    <link href="https://fonts.googleapis.com/css2?family=Inter:wght@300;400;500;600;700&display=swap" rel="stylesheet">
+    <style>
+        :root {
+            --bg-main: #0f172a;
+            --bg-card: rgba(30, 41, 59, 0.75);
+            --border-card: rgba(255, 255, 255, 0.1);
+            --accent-blue: #3b82f6;
+            --accent-blue-hover: #2563eb;
+            --accent-green: #10b981;
+            --accent-red: #ef4444;
+            --accent-purple: #8b5cf6;
+            --accent-amber: #f59e0b;
+            --text-main: #f8fafc;
+            --text-muted: #94a3b8;
+        }
+
+        * { box-sizing: border-box; margin: 0; padding: 0; font-family: 'Inter', system-ui, -apple-system, sans-serif; }
+        body { background-color: var(--bg-main); color: var(--text-main); min-height: 100vh; padding: 2rem 1.5rem; }
+        
+        .container { max-width: 1250px; margin: 0 auto; }
+        
+        header { display: flex; justify-content: space-between; align-items: center; margin-bottom: 2rem; flex-wrap: wrap; gap: 1rem; }
+        .logo-area { display: flex; align-items: center; gap: 0.75rem; }
+        .logo-icon { font-size: 1.75rem; }
+        h1 { font-size: 1.75rem; font-weight: 700; background: linear-gradient(135deg, #60a5fa, #a78bfa); -webkit-background-clip: text; -webkit-text-fill-color: transparent; }
+
+        .token-bar { display: flex; align-items: center; gap: 0.5rem; background: rgba(30, 41, 59, 0.6); padding: 0.5rem 1rem; border-radius: 0.75rem; border: 1px solid var(--border-card); }
+        .token-bar label { font-size: 0.8rem; color: var(--text-muted); font-weight: 600; white-space: nowrap; }
+        .token-bar input { background: #0f172a; border: 1px solid var(--border-card); color: #fff; padding: 0.4rem 0.7rem; border-radius: 0.5rem; font-size: 0.85rem; width: 220px; outline: none; }
+
+        .tabs { display: flex; gap: 1rem; margin-bottom: 1.5rem; border-bottom: 1px solid var(--border-card); padding-bottom: 0.75rem; flex-wrap: wrap; }
+        .tab-btn { background: rgba(30, 41, 59, 0.5); border: 1px solid var(--border-card); color: var(--text-muted); padding: 0.75rem 1.4rem; border-radius: 0.75rem; cursor: pointer; font-weight: 600; transition: all 0.2s; display: inline-flex; align-items: center; gap: 0.5rem; }
+        .tab-btn:hover { background: rgba(51, 65, 85, 0.7); color: #fff; }
+        .tab-btn.active { background: var(--accent-blue); border-color: var(--accent-blue); color: #fff; box-shadow: 0 4px 14px rgba(59, 130, 246, 0.35); }
+
+        .card { background: var(--bg-card); backdrop-filter: blur(12px); border: 1px solid var(--border-card); border-radius: 1rem; padding: 1.5rem; margin-bottom: 1.5rem; box-shadow: 0 10px 30px rgba(0, 0, 0, 0.25); }
+        .card-header { display: flex; justify-content: space-between; align-items: center; margin-bottom: 1rem; flex-wrap: wrap; gap: 0.75rem; }
+        .card-title { font-size: 1.15rem; font-weight: 600; color: #f1f5f9; display: flex; align-items: center; gap: 0.5rem; }
+
+        .stat-grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(160px, 1fr)); gap: 1rem; margin-bottom: 1.5rem; }
+        .stat-card { background: rgba(15, 23, 42, 0.6); border: 1px solid var(--border-card); border-radius: 0.75rem; padding: 1rem; text-align: center; }
+        .stat-val { font-size: 1.5rem; font-weight: 700; margin-top: 0.25rem; }
+        .stat-label { font-size: 0.775rem; color: var(--text-muted); font-weight: 600; text-transform: uppercase; }
+
+        .form-grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(200px, 1fr)); gap: 1rem; }
+        .form-group { margin-bottom: 0.75rem; }
+        label { display: block; font-size: 0.825rem; color: var(--text-muted); margin-bottom: 0.35rem; font-weight: 500; }
+        input, select, textarea { width: 100%; background: #0f172a; border: 1px solid var(--border-card); color: #fff; padding: 0.6rem 0.8rem; border-radius: 0.5rem; font-size: 0.9rem; outline: none; transition: border 0.2s; }
+        input:focus, textarea:focus { border-color: var(--accent-blue); box-shadow: 0 0 0 2px rgba(59, 130, 246, 0.2); }
+        textarea { min-height: 90px; font-family: monospace; line-height: 1.4; }
+
+        .btn-toolbar { display: flex; gap: 0.75rem; margin-top: 1rem; justify-content: space-between; align-items: center; flex-wrap: wrap; }
+        .btn { padding: 0.65rem 1.25rem; border-radius: 0.6rem; border: none; font-weight: 600; cursor: pointer; display: inline-flex; align-items: center; gap: 0.5rem; font-size: 0.9rem; transition: all 0.2s; }
+        .btn-primary { background: var(--accent-blue); color: #fff; }
+        .btn-primary:hover { background: var(--accent-blue-hover); transform: translateY(-1px); }
+        .btn-success { background: var(--accent-green); color: #fff; font-size: 1rem; padding: 0.75rem 1.75rem; }
+        .btn-success:hover { background: #059669; transform: translateY(-1px); box-shadow: 0 4px 15px rgba(16, 185, 129, 0.4); }
+        .btn-danger { background: var(--accent-red); color: #fff; padding: 0.35rem 0.65rem; font-size: 0.8rem; border-radius: 0.4rem; }
+        .btn-danger:hover { background: #dc2626; }
+        .btn-secondary { background: #334155; color: #e2e8f0; }
+        .btn-secondary:hover { background: #475569; }
+        .btn-sm { padding: 0.35rem 0.65rem; font-size: 0.8rem; border-radius: 0.4rem; }
+
+        .filter-btn-group { display: flex; gap: 0.5rem; flex-wrap: wrap; }
+        .filter-btn { background: rgba(30, 41, 59, 0.6); border: 1px solid var(--border-card); color: var(--text-muted); padding: 0.4rem 0.8rem; border-radius: 0.5rem; font-size: 0.8rem; font-weight: 600; cursor: pointer; }
+        .filter-btn.active { background: #334155; color: #fff; border-color: var(--accent-blue); }
+
+        .badge { display: inline-block; padding: 0.25rem 0.6rem; border-radius: 0.375rem; font-size: 0.75rem; font-weight: 700; }
+        .badge-both { background: rgba(16, 185, 129, 0.2); color: #34d399; border: 1px solid rgba(16, 185, 129, 0.4); }
+        .badge-main { background: rgba(59, 130, 246, 0.2); color: #60a5fa; border: 1px solid rgba(59, 130, 246, 0.4); }
+        .badge-review { background: rgba(139, 92, 246, 0.2); color: #c084fc; border: 1px solid rgba(139, 92, 246, 0.4); }
+        .badge-diff { background: rgba(245, 158, 11, 0.2); color: #fbbf24; border: 1px solid rgba(245, 158, 11, 0.4); }
+
+        .search-box { width: 260px; }
+
+        table { width: 100%; border-collapse: collapse; margin-top: 0.5rem; }
+        th, td { text-align: left; padding: 0.65rem 0.75rem; border-bottom: 1px solid rgba(255, 255, 255, 0.06); font-size: 0.875rem; }
+        th { font-size: 0.775rem; text-transform: uppercase; color: var(--text-muted); font-weight: 600; background: rgba(15, 23, 42, 0.4); }
+        td input { padding: 0.4rem 0.6rem; font-size: 0.85rem; }
+        tr:hover td { background: rgba(255, 255, 255, 0.02); }
+
+        .actions-cell { display: flex; gap: 0.4rem; align-items: center; }
+
+        .toast { position: fixed; top: 1.5rem; right: 1.5rem; padding: 1rem 1.5rem; border-radius: 0.75rem; color: #fff; font-weight: 600; display: none; z-index: 1000; box-shadow: 0 10px 25px rgba(0,0,0,0.5); backdrop-filter: blur(8px); }
+        .toast-success { background: rgba(16, 185, 129, 0.9); border: 1px solid #10b981; }
+        .toast-error { background: rgba(239, 68, 68, 0.9); border: 1px solid #ef4444; }
+
+        .spinner { border: 3px solid rgba(255,255,255,0.3); border-top: 3px solid #fff; border-radius: 50%; width: 18px; height: 18px; animation: spin 0.8s linear infinite; display: none; }
+        @keyframes spin { 0% { transform: rotate(0deg); } 100% { transform: rotate(360deg); } }
+    </style>
+</head>
+<body>
+
+<div class="container">
+    <header>
+        <div class="logo-area">
+            <span class="logo-icon">📊</span>
+            <h1>GitHub Portfolio Studio</h1>
+        </div>
+        <div class="token-bar">
+            <label for="patToken">GitHub PAT Token:</label>
+            <input type="password" id="patToken" placeholder="Default: TOKEN_GIT_JSON" autocomplete="off">
+            <button class="btn btn-secondary btn-sm" onclick="toggleTokenVis()">👁️</button>
+        </div>
+    </header>
+
+    <div class="tabs">
+        <button class="tab-btn active" id="tab-portfolio" onclick="switchTab('portfolio')">📁 Main Portfolio (portfolio.json)</button>
+        <button class="tab-btn" id="tab-review" onclick="switchTab('review')">📁 Review Portfolio (portfolio_review.json)</button>
+        <button class="tab-btn" id="tab-compare" onclick="switchTab('compare')">⚖️ Compare Portfolios</button>
+    </div>
+
+    <!-- TAB 1: portfolio.json -->
+    <div id="view-portfolio">
+        <div class="card">
+            <div class="card-header">
+                <div class="card-title">⏰ Sleep Schedule Configuration</div>
+                <span id="time-readable" style="font-size: 0.85rem; color: var(--accent-green); font-weight: 600;"></span>
+            </div>
+            <div class="form-grid">
+                <div class="form-group">
+                    <label>Sleep Start (Mins from Midnight):</label>
+                    <input type="number" id="ts-start" placeholder="e.g. 30 (00:30)" oninput="updateTimeReadable()">
+                </div>
+                <div class="form-group">
+                    <label>Sleep End (Mins from Midnight):</label>
+                    <input type="number" id="ts-end" placeholder="e.g. 450 (07:30)" oninput="updateTimeReadable()">
+                </div>
+            </div>
+        </div>
+
+        <div class="card">
+            <div class="card-header">
+                <div class="card-title">📈 Main Portfolio Tickers</div>
+                <input type="text" class="search-box" id="search-p1" placeholder="🔍 Search ticker..." oninput="filterTable('table-p1', this.value)">
+            </div>
+            <table id="table-p1">
+                <thead>
+                    <tr>
+                        <th style="width: 60px;">#</th>
+                        <th>Ticker Symbol</th>
+                        <th>Price Floor ($)</th>
+                        <th>Price Ceiling ($)</th>
+                        <th style="width: 130px;">Actions</th>
+                    </tr>
+                </thead>
+                <tbody id="body-p1"></tbody>
+            </table>
+            <div class="btn-toolbar">
+                <button class="btn btn-secondary btn-sm" onclick="addRowP1()">➕ Add Symbol</button>
+                <button class="btn btn-success" onclick="saveData()">
+                    <div class="spinner" id="spin-p1"></div>
+                    💾 Save Main Portfolio to GitHub
+                </button>
+            </div>
+        </div>
+    </div>
+
+    <!-- TAB 2: portfolio_review.json -->
+    <div id="view-review" style="display: none;">
+        <!-- Stock Section -->
+        <div class="card">
+            <div class="card-header">
+                <div class="card-title">📉 Stock Watchlist & Indicators</div>
+                <input type="text" class="search-box" id="search-p2-stock" placeholder="🔍 Search ticker or description..." oninput="filterTable('table-p2-stock', this.value)">
+            </div>
+            <table id="table-p2-stock">
+                <thead>
+                    <tr>
+                        <th style="width: 50px;">#</th>
+                        <th>Ticker Symbol</th>
+                        <th>Description</th>
+                        <th>Price Floor ($)</th>
+                        <th>Price Ceiling ($)</th>
+                        <th style="width: 130px;">Actions</th>
+                    </tr>
+                </thead>
+                <tbody id="body-p2-stock"></tbody>
+            </table>
+            <div style="margin-top: 0.75rem;">
+                <button class="btn btn-secondary btn-sm" onclick="addRowP2Stock()">➕ Add Stock</button>
+            </div>
+        </div>
+
+        <!-- Currency Section -->
+        <div class="card">
+            <div class="card-header">
+                <div class="card-title">💱 Currency Watchlist</div>
+            </div>
+            <table id="table-p2-currency">
+                <thead>
+                    <tr>
+                        <th style="width: 50px;">#</th>
+                        <th>Ticker Symbol</th>
+                        <th>Description</th>
+                        <th>Price Floor ($)</th>
+                        <th>Price Ceiling ($)</th>
+                        <th>Data Source</th>
+                        <th style="width: 90px;">Actions</th>
+                    </tr>
+                </thead>
+                <tbody id="body-p2-currency"></tbody>
+            </table>
+            <div style="margin-top: 0.75rem;">
+                <button class="btn btn-secondary btn-sm" onclick="addRowP2Currency()">➕ Add Currency</button>
+            </div>
+        </div>
+
+        <!-- Indicator Rules & MacroMicro Section -->
+        <div class="card">
+            <div class="card-header">
+                <div class="card-title">⚙️ Technical Indicator Thresholds & Macro Indicators</div>
+            </div>
+            <div class="form-grid" style="margin-bottom: 1.25rem;">
+                <div class="form-group"><label>KD High Zone (KdHigh):</label><input type="number" id="rule-kd-high"></div>
+                <div class="form-group"><label>KD Low Zone (KdLow):</label><input type="number" id="rule-kd-low"></div>
+                <div class="form-group"><label>CCI High Zone (CciHigh):</label><input type="number" id="rule-cci-high"></div>
+                <div class="form-group"><label>CCI Low Zone (CciLow):</label><input type="number" id="rule-cci-low"></div>
+                <div class="form-group"><label>RSI High Zone (RsiHigh):</label><input type="number" id="rule-rsi-high"></div>
+                <div class="form-group"><label>RSI Low Zone (RsiLow):</label><input type="number" id="rule-rsi-low"></div>
+                <div class="form-group"><label>Display Days (DisplayPeriod):</label><input type="number" id="rule-display-period"></div>
+            </div>
+
+            <div class="form-group">
+                <label>MacroMicro Indicator ID List (macrom!cro - Comma-Separated):</label>
+                <textarea id="macro-ids" placeholder="3,40,44,54530..."></textarea>
+            </div>
+
+            <div class="btn-toolbar" style="margin-top: 1.5rem;">
+                <div></div>
+                <button class="btn btn-success" onclick="saveData()">
+                    <div class="spinner" id="spin-p2"></div>
+                    💾 Save Review Portfolio to GitHub
+                </button>
+            </div>
+        </div>
+    </div>
+
+    <!-- TAB 3: Compare Portfolios -->
+    <div id="view-compare" style="display: none;">
+        <div class="stat-grid">
+            <div class="stat-card">
+                <div class="stat-label">Main Count</div>
+                <div class="stat-val" id="stat-main-cnt" style="color: #60a5fa;">0</div>
+            </div>
+            <div class="stat-card">
+                <div class="stat-label">Review Count</div>
+                <div class="stat-val" id="stat-review-cnt" style="color: #c084fc;">0</div>
+            </div>
+            <div class="stat-card">
+                <div class="stat-label">Matched In Both</div>
+                <div class="stat-val" id="stat-both-cnt" style="color: #34d399;">0</div>
+            </div>
+            <div class="stat-card">
+                <div class="stat-label">Main Only</div>
+                <div class="stat-val" id="stat-main-only-cnt" style="color: #38bdf8;">0</div>
+            </div>
+            <div class="stat-card">
+                <div class="stat-label">Review Only</div>
+                <div class="stat-val" id="stat-review-only-cnt" style="color: #a78bfa;">0</div>
+            </div>
+            <div class="stat-card">
+                <div class="stat-label">Target Mismatches</div>
+                <div class="stat-val" id="stat-diff-cnt" style="color: #fbbf24;">0</div>
+            </div>
+        </div>
+
+        <div class="card">
+            <div class="card-header">
+                <div class="card-title">⚖️ Portfolio Comparison Matrix</div>
+                <div style="display: flex; gap: 0.75rem; align-items: center; flex-wrap: wrap;">
+                    <div class="filter-btn-group">
+                        <button class="filter-btn active" id="fbtn-all" onclick="filterCompare('all')">All Symbols</button>
+                        <button class="filter-btn" id="fbtn-both" onclick="filterCompare('both')">In Both (🟢)</button>
+                        <button class="filter-btn" id="fbtn-main" onclick="filterCompare('main')">Main Only (🔵)</button>
+                        <button class="filter-btn" id="fbtn-review" onclick="filterCompare('review')">Review Only (🟣)</button>
+                        <button class="filter-btn" id="fbtn-diff" onclick="filterCompare('diff')">Mismatches (⚠️)</button>
+                    </div>
+                    <input type="text" class="search-box" id="search-compare" placeholder="🔍 Search ticker or description..." oninput="filterTable('table-compare', this.value)">
+                </div>
+            </div>
+
+            <table id="table-compare">
+                <thead>
+                    <tr>
+                        <th style="width: 50px;">#</th>
+                        <th style="width: 110px;">Status</th>
+                        <th>Ticker Symbol</th>
+                        <th>Description</th>
+                        <th>Main (Floor / Ceiling)</th>
+                        <th>Review (Floor / Ceiling)</th>
+                        <th>Comparison Result</th>
+                    </tr>
+                </thead>
+                <tbody id="body-compare"></tbody>
+            </table>
+        </div>
+    </div>
+</div>
+
+<div class="toast" id="toast"></div>
+
+<script>
+    let activeTab = 'portfolio';
+    let dataP1 = null;
+    let dataP2 = null;
+    let compareFilter = 'all';
+
+    document.addEventListener('DOMContentLoaded', () => {
+        const savedToken = localStorage.getItem('gh_pat_token');
+        if (savedToken) {
+            document.getElementById('patToken').value = savedToken;
+        }
+        document.getElementById('patToken').addEventListener('input', (e) => {
+            localStorage.setItem('gh_pat_token', e.target.value);
+        });
+        loadData(activeTab);
+    });
+
+    function toggleTokenVis() {
+        const input = document.getElementById('patToken');
+        input.type = input.type === 'password' ? 'text' : 'password';
+    }
+
+    function showToast(msg, isSuccess = true) {
+        const t = document.getElementById('toast');
+        t.innerText = msg;
+        t.className = 'toast ' + (isSuccess ? 'toast-success' : 'toast-error');
+        t.style.display = 'block';
+        setTimeout(() => { t.style.display = 'none'; }, 4000);
+    }
+
+    function switchTab(tab) {
+        activeTab = tab;
+        document.getElementById('tab-portfolio').className = 'tab-btn' + (tab === 'portfolio' ? ' active' : '');
+        document.getElementById('tab-review').className = 'tab-btn' + (tab === 'review' ? ' active' : '');
+        document.getElementById('tab-compare').className = 'tab-btn' + (tab === 'compare' ? ' active' : '');
+        
+        document.getElementById('view-portfolio').style.display = tab === 'portfolio' ? 'block' : 'none';
+        document.getElementById('view-review').style.display = tab === 'review' ? 'block' : 'none';
+        document.getElementById('view-compare').style.display = tab === 'compare' ? 'block' : 'none';
+        
+        if (tab === 'compare') {
+            loadBothForCompare();
+        } else {
+            loadData(tab);
+        }
+    }
+
+    function loadData(tab) {
+        fetch(`/json/?action=load&target=${tab}`)
+            .then(res => res.json())
+            .then(res => {
+                if (!res.success) {
+                    showToast('Load Failed: ' + res.error, false);
+                    return;
+                }
+                if (tab === 'portfolio') {
+                    dataP1 = res.data;
+                    renderP1();
+                } else if (tab === 'review') {
+                    dataP2 = res.data;
+                    renderP2();
+                }
+            })
+            .catch(err => showToast('Network Error: ' + err, false));
+    }
+
+    function loadBothForCompare() {
+        Promise.all([
+            fetch('/json/?action=load&target=portfolio').then(r => r.json()),
+            fetch('/json/?action=load&target=review').then(r => r.json())
+        ])
+        .then(([r1, r2]) => {
+            if (r1.success) dataP1 = r1.data;
+            if (r2.success) dataP2 = r2.data;
+            renderCompare();
+        })
+        .catch(err => showToast('Failed to load comparison data: ' + err, false));
+    }
+
+    function updateTimeReadable() {
+        const s = parseInt(document.getElementById('ts-start').value) || 0;
+        const e = parseInt(document.getElementById('ts-end').value) || 0;
+        const formatMin = (m) => {
+            const hrs = String(Math.floor(m / 60)).padStart(2, '0');
+            const mins = String(m % 60).padStart(2, '0');
+            return `${hrs}:${mins}`;
+        };
+        document.getElementById('time-readable').innerText = `Sleep Interval: ${formatMin(s)} ~ ${formatMin(e)}`;
+    }
+
+    // --- TAB 1 Rendering ---
+    function renderP1() {
+        if (!dataP1) return;
+        const ts = dataP1.timestamp || [30, 450];
+        document.getElementById('ts-start').value = ts[0];
+        document.getElementById('ts-end').value = ts[1];
+        updateTimeReadable();
+
+        const tbody = document.getElementById('body-p1');
+        tbody.innerHTML = '';
+        (dataP1.portfolio || []).forEach((row, i) => {
+            const tr = document.createElement('tr');
+            tr.innerHTML = `
+                <td style="color: var(--text-muted); font-weight: 600;">${i + 1}</td>
+                <td><input type="text" value="${row[0] || ''}" onchange="dataP1.portfolio[${i}][0] = this.value"></td>
+                <td><input type="number" step="any" value="${row[1] ?? ''}" onchange="dataP1.portfolio[${i}][1] = parseFloat(this.value) || 0"></td>
+                <td><input type="number" step="any" value="${row[2] ?? ''}" onchange="dataP1.portfolio[${i}][2] = parseFloat(this.value) || 0"></td>
+                <td class="actions-cell">
+                    <button class="btn btn-secondary btn-sm" onclick="moveP1(${i}, -1)">⬆️</button>
+                    <button class="btn btn-secondary btn-sm" onclick="moveP1(${i}, 1)">⬇️</button>
+                    <button class="btn btn-danger" onclick="delP1(${i})">🗑️</button>
+                </td>
+            `;
+            tbody.appendChild(tr);
+        });
+    }
+
+    function addRowP1() {
+        if (!dataP1) dataP1 = { timestamp: [30, 450], portfolio: [] };
+        dataP1.portfolio.push(["NEW.TW", 100, 200]);
+        renderP1();
+    }
+
+    function moveP1(idx, dir) {
+        const target = idx + dir;
+        if (target < 0 || target >= dataP1.portfolio.length) return;
+        const temp = dataP1.portfolio[idx];
+        dataP1.portfolio[idx] = dataP1.portfolio[target];
+        dataP1.portfolio[target] = temp;
+        renderP1();
+    }
+
+    function delP1(idx) {
+        dataP1.portfolio.splice(idx, 1);
+        renderP1();
+    }
+
+    // --- TAB 2 Rendering ---
+    function renderP2() {
+        if (!dataP2) return;
+
+        // Stocks
+        const tbodyStock = document.getElementById('body-p2-stock');
+        tbodyStock.innerHTML = '';
+        (dataP2.stock || []).forEach((item, i) => {
+            const tr = document.createElement('tr');
+            tr.innerHTML = `
+                <td style="color: var(--text-muted); font-weight: 600;">${i + 1}</td>
+                <td><input type="text" value="${item.ticker || ''}" onchange="dataP2.stock[${i}].ticker = this.value"></td>
+                <td><input type="text" value="${item.description || ''}" onchange="dataP2.stock[${i}].description = this.value"></td>
+                <td><input type="number" step="any" value="${item.priceFloor ?? ''}" onchange="dataP2.stock[${i}].priceFloor = parseFloat(this.value) || 0"></td>
+                <td><input type="number" step="any" value="${item.priceCeiling ?? ''}" onchange="dataP2.stock[${i}].priceCeiling = parseFloat(this.value) || 0"></td>
+                <td class="actions-cell">
+                    <button class="btn btn-secondary btn-sm" onclick="moveP2Stock(${i}, -1)">⬆️</button>
+                    <button class="btn btn-secondary btn-sm" onclick="moveP2Stock(${i}, 1)">⬇️</button>
+                    <button class="btn btn-danger" onclick="delP2Stock(${i})">🗑️</button>
+                </td>
+            `;
+            tbodyStock.appendChild(tr);
+        });
+
+        // Currencies
+        const tbodyCurr = document.getElementById('body-p2-currency');
+        tbodyCurr.innerHTML = '';
+        (dataP2.currency || []).forEach((item, i) => {
+            const tr = document.createElement('tr');
+            tr.innerHTML = `
+                <td style="color: var(--text-muted); font-weight: 600;">${i + 1}</td>
+                <td><input type="text" value="${item.ticker || ''}" onchange="dataP2.currency[${i}].ticker = this.value"></td>
+                <td><input type="text" value="${item.description || ''}" onchange="dataP2.currency[${i}].description = this.value"></td>
+                <td><input type="number" step="any" value="${item.priceFloor ?? ''}" onchange="dataP2.currency[${i}].priceFloor = parseFloat(this.value) || 0"></td>
+                <td><input type="number" step="any" value="${item.priceCeiling ?? ''}" onchange="dataP2.currency[${i}].priceCeiling = parseFloat(this.value) || 0"></td>
+                <td><input type="text" value="${item.source || ''}" onchange="dataP2.currency[${i}].source = this.value"></td>
+                <td class="actions-cell">
+                    <button class="btn btn-danger" onclick="delP2Currency(${i})">🗑️</button>
+                </td>
+            `;
+            tbodyCurr.appendChild(tr);
+        });
+
+        // Rules & Macro
+        const rules = dataP2.stockCheckingRule || {};
+        document.getElementById('rule-kd-high').value = rules.KdHigh ?? 80;
+        document.getElementById('rule-kd-low').value = rules.KdLow ?? 20;
+        document.getElementById('rule-cci-high').value = rules.CciHigh ?? 100;
+        document.getElementById('rule-cci-low').value = rules.CciLow ?? -100;
+        document.getElementById('rule-rsi-high').value = rules.RsiHigh ?? 70;
+        document.getElementById('rule-rsi-low').value = rules.RsiLow ?? 30;
+        document.getElementById('rule-display-period').value = rules.DisplayPeriod ?? 720;
+
+        document.getElementById('macro-ids').value = dataP2['macrom!cro'] || '';
+    }
+
+    function addRowP2Stock() {
+        if (!dataP2) dataP2 = {};
+        if (!dataP2.stock) dataP2.stock = [];
+        dataP2.stock.push({ ticker: "NEW", description: "Description", priceFloor: 100, priceCeiling: 200 });
+        renderP2();
+    }
+
+    function moveP2Stock(idx, dir) {
+        const target = idx + dir;
+        if (target < 0 || target >= dataP2.stock.length) return;
+        const temp = dataP2.stock[idx];
+        dataP2.stock[idx] = dataP2.stock[target];
+        dataP2.stock[target] = temp;
+        renderP2();
+    }
+
+    function delP2Stock(idx) {
+        dataP2.stock.splice(idx, 1);
+        renderP2();
+    }
+
+    function addRowP2Currency() {
+        if (!dataP2) dataP2 = {};
+        if (!dataP2.currency) dataP2.currency = [];
+        dataP2.currency.push({ ticker: "USD", description: "US Dollar", priceFloor: 28, priceCeiling: 32, source: "HNCB" });
+        renderP2();
+    }
+
+    function delP2Currency(idx) {
+        dataP2.currency.splice(idx, 1);
+        renderP2();
+    }
+
+    // --- TAB 3: Comparison Rendering ---
+    function renderCompare() {
+        const mainMap = new Map();
+        if (dataP1 && dataP1.portfolio) {
+            dataP1.portfolio.forEach(item => {
+                if (item && item[0]) mainMap.set(item[0], { floor: item[1], ceiling: item[2] });
+            });
+        }
+
+        const reviewMap = new Map();
+        if (dataP2 && dataP2.stock) {
+            dataP2.stock.forEach(item => {
+                if (item && item.ticker) reviewMap.set(item.ticker, { desc: item.description || '', floor: item.priceFloor, ceiling: item.priceCeiling });
+            });
+        }
+
+        const allTickers = new Set([...mainMap.keys(), ...reviewMap.keys()]);
+        
+        let cntMain = mainMap.size;
+        let cntReview = reviewMap.size;
+        let cntBoth = 0;
+        let cntMainOnly = 0;
+        let cntReviewOnly = 0;
+        let cntDiff = 0;
+
+        const compareList = [];
+
+        allTickers.forEach(ticker => {
+            const inMain = mainMap.has(ticker);
+            const inReview = reviewMap.has(ticker);
+            
+            const mainData = mainMap.get(ticker) || null;
+            const reviewData = reviewMap.get(ticker) || null;
+
+            let status = 'both';
+            let resultText = 'Match ✅';
+            let isDiff = false;
+
+            if (inMain && inReview) {
+                cntBoth++;
+                const floorMatch = (mainData.floor === reviewData.floor);
+                const ceilingMatch = (mainData.ceiling === reviewData.ceiling);
+                if (!floorMatch || !ceilingMatch) {
+                    isDiff = true;
+                    cntDiff++;
+                    const diffParts = [];
+                    if (!floorMatch) diffParts.push(`Floor: $${mainData.floor} vs $${reviewData.floor}`);
+                    if (!ceilingMatch) diffParts.push(`Ceiling: $${mainData.ceiling} vs $${reviewData.ceiling}`);
+                    resultText = `Mismatch ⚠️ (${diffParts.join(', ')})`;
+                }
+            } else if (inMain) {
+                status = 'main';
+                cntMainOnly++;
+                resultText = 'Main Only 🔵';
+            } else {
+                status = 'review';
+                cntReviewOnly++;
+                resultText = 'Review Only 🟣';
+            }
+
+            compareList.push({
+                ticker,
+                status,
+                isDiff,
+                desc: reviewData ? reviewData.desc : '',
+                mainFloor: mainData ? mainData.floor : '-',
+                mainCeiling: mainData ? mainData.ceiling : '-',
+                reviewFloor: reviewData ? reviewData.floor : '-',
+                reviewCeiling: reviewData ? reviewData.ceiling : '-',
+                resultText
+            });
+        });
+
+        // Update stats
+        document.getElementById('stat-main-cnt').innerText = cntMain;
+        document.getElementById('stat-review-cnt').innerText = cntReview;
+        document.getElementById('stat-both-cnt').innerText = cntBoth;
+        document.getElementById('stat-main-only-cnt').innerText = cntMainOnly;
+        document.getElementById('stat-review-only-cnt').innerText = cntReviewOnly;
+        document.getElementById('stat-diff-cnt').innerText = cntDiff;
+
+        // Render table
+        const tbody = document.getElementById('body-compare');
+        tbody.innerHTML = '';
+
+        compareList.forEach((item, i) => {
+            let badgeHtml = '';
+            if (item.status === 'both') {
+                badgeHtml = item.isDiff ? '<span class="badge badge-diff">Both (Mismatch)</span>' : '<span class="badge badge-both">Both</span>';
+            } else if (item.status === 'main') {
+                badgeHtml = '<span class="badge badge-main">Main Only</span>';
+            } else {
+                badgeHtml = '<span class="badge badge-review">Review Only</span>';
+            }
+
+            const tr = document.createElement('tr');
+            tr.setAttribute('data-status', item.status);
+            tr.setAttribute('data-diff', item.isDiff ? 'true' : 'false');
+            tr.innerHTML = `
+                <td style="color: var(--text-muted); font-weight: 600;">${i + 1}</td>
+                <td>${badgeHtml}</td>
+                <td style="font-weight: 700; color: #fff;">${item.ticker}</td>
+                <td style="color: var(--text-muted);">${item.desc || '-'}</td>
+                <td><code>$${item.mainFloor} / $${item.mainCeiling}</code></td>
+                <td><code>$${item.reviewFloor} / $${item.reviewCeiling}</code></td>
+                <td style="${item.isDiff ? 'color: var(--accent-amber); font-weight: 600;' : 'color: var(--text-muted);'}">${item.resultText}</td>
+            `;
+            tbody.appendChild(tr);
+        });
+
+        filterCompare(compareFilter);
+    }
+
+    function filterCompare(filterType) {
+        compareFilter = filterType;
+        ['all', 'both', 'main', 'review', 'diff'].forEach(f => {
+            const btn = document.getElementById(`fbtn-${f}`);
+            if (btn) btn.className = 'filter-btn' + (f === filterType ? ' active' : '');
+        });
+
+        const rows = document.querySelectorAll('#table-compare tbody tr');
+        rows.forEach(tr => {
+            const status = tr.getAttribute('data-status');
+            const isDiff = tr.getAttribute('data-diff') === 'true';
+
+            let show = false;
+            if (filterType === 'all') show = true;
+            else if (filterType === 'both') show = (status === 'both');
+            else if (filterType === 'main') show = (status === 'main');
+            else if (filterType === 'review') show = (status === 'review');
+            else if (filterType === 'diff') show = isDiff;
+
+            tr.style.display = show ? '' : 'none';
+        });
+    }
+
+    function filterTable(tableId, query) {
+        const q = query.toLowerCase();
+        const rows = document.querySelectorAll(`#${tableId} tbody tr`);
+        rows.forEach(tr => {
+            const text = tr.innerText.toLowerCase();
+            tr.style.display = text.includes(q) ? '' : 'none';
+        });
+    }
+
+    // --- Save Handler ---
+    function saveData() {
+        const spin = document.getElementById(activeTab === 'portfolio' ? 'spin-p1' : 'spin-p2');
+        if (spin) spin.style.display = 'inline-block';
+
+        let finalData = null;
+
+        if (activeTab === 'portfolio') {
+            const s = parseInt(document.getElementById('ts-start').value) || 0;
+            const e = parseInt(document.getElementById('ts-end').value) || 0;
+            dataP1.timestamp = [s, e];
+            finalData = dataP1;
+        } else {
+            dataP2.stockCheckingRule = {
+                KdHigh: parseFloat(document.getElementById('rule-kd-high').value) || 80,
+                KdLow: parseFloat(document.getElementById('rule-kd-low').value) || 20,
+                CciHigh: parseFloat(document.getElementById('rule-cci-high').value) || 100,
+                CciLow: parseFloat(document.getElementById('rule-cci-low').value) || -100,
+                RsiHigh: parseFloat(document.getElementById('rule-rsi-high').value) || 70,
+                RsiLow: parseFloat(document.getElementById('rule-rsi-low').value) || 30,
+                DisplayPeriod: parseInt(document.getElementById('rule-display-period').value) || 720
+            };
+            dataP2['macrom!cro'] = document.getElementById('macro-ids').value.trim();
+            finalData = dataP2;
+        }
+
+        const payload = {
+            target: activeTab,
+            data: finalData,
+            token: document.getElementById('patToken').value.trim()
+        };
+
+        fetch('/json/', {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify(payload)
+        })
+        .then(res => res.json())
+        .then(res => {
+            if (spin) spin.style.display = 'none';
+            if (res.success) {
+                showToast(res.message, true);
+            } else {
+                showToast('Save Failed: ' + res.error, false);
+            }
+        })
+        .catch(err => {
+            if (spin) spin.style.display = 'none';
+            showToast('Network Request Error: ' + err, false);
+        });
+    }
+</script>
+</body>
+</html>"""
+
+
+@app.route('/json/', methods=['GET', 'POST'])
+def json_modifier():
+  if request.method == 'GET' and request.args.get('action') == 'load':
+    target = request.args.get('target', 'portfolio')
+    url_target = url_git_json_review if target == 'review' else url_git_json
+    try:
+      r = requests.get(url_target, timeout=8)
+      if r.status_code == 200:
+        return jsonify({'success': True, 'data': r.json()})
+      else:
+        return jsonify({'success': False, 'error': f'HTTP {r.status_code}'})
+    except Exception as e:
+      return jsonify({'success': False, 'error': str(e)})
+
+  if request.method == 'POST':
+    try:
+      payload_req = request.get_json() or {}
+      target = payload_req.get('target', 'portfolio')
+      data_content = payload_req.get('data')
+      token_input = payload_req.get('token', '').strip()
+
+      active_token = token_input if token_input else token_git_json
+      if not active_token:
+        return jsonify({'success': False, 'error': 'Missing GitHub PAT Token. Please enter token or set TOKEN_GIT_JSON.'})
+
+      write_endpoint = content_git_json_review if target == 'review' else content_git_json
+      headers_gh = {
+        'Authorization': f'Bearer {active_token}',
+        'Accept': 'application/vnd.github+json',
+        'User-Agent': 'StockReview-App'
+      }
+
+      # 1. Fetch file SHA from GitHub API
+      r_sha = requests.get(write_endpoint, headers=headers_gh, timeout=8)
+      sha = None
+      if r_sha.status_code == 200:
+        sha = r_sha.json().get('sha')
+      elif r_sha.status_code == 401:
+        return jsonify({'success': False, 'error': 'GitHub Token Authentication Failed (401 Unauthorized)'})
+      elif r_sha.status_code == 404:
+        return jsonify({'success': False, 'error': f'GitHub API File Not Found (404 Not Found): {write_endpoint}'})
+
+      # 2. Convert updated JSON to Base64
+      json_bytes = json.dumps(data_content, indent=2, ensure_ascii=False).encode('utf-8')
+      b64_content = base64.b64encode(json_bytes).decode('utf-8')
+
+      # 3. Commit PUT request to GitHub API
+      target_filename = 'portfolio_review.json' if target == 'review' else 'portfolio.json'
+      put_body = {
+        'message': f'Update {target_filename} via Web Studio',
+        'content': b64_content
+      }
+      if sha:
+        put_body['sha'] = sha
+
+      r_put = requests.request('PUT', write_endpoint, headers=headers_gh, json=put_body, timeout=10)
+
+      if r_put.status_code in (200, 201):
+        return jsonify({'success': True, 'message': f'Successfully updated {target_filename} on GitHub!'})
+      else:
+        return jsonify({'success': False, 'error': f'GitHub Commit Failed (HTTP {r_put.status_code}): {r_put.text}'})
+
+    except Exception as e:
+      return jsonify({'success': False, 'error': str(e)})
+
+  return render_template_string(JSON_EDITOR_HTML)
 
 
 
