@@ -1865,45 +1865,16 @@ def json_modifier():
   if request.method == 'GET' and request.args.get('action') == 'load':
     target = request.args.get('target', 'portfolio')
     url_target = url_git_json_review if target == 'review' else url_git_json
-    headers_req = {'User-Agent': user_agent}
-    if token_git_json:
-      headers_req['Authorization'] = f'Bearer {token_git_json}'
-    
-    last_err = None
-    r = None
-    for attempt in range(3):
-      try:
-        r = requests.get(url_target, headers=headers_req, timeout=8)
-        if r.status_code == 200:
-          break
-        elif r.status_code in (403, 429):
-          print(f"[HTTP {r.status_code}] Rate limited or forbidden. Retrying in 1s (Attempt {attempt+1}/3)...")
-          time.sleep(1)
-        else:
-          time.sleep(0.5)
-      except Exception as ex:
-        last_err = ex
-        time.sleep(1)
-
     try:
-      if r and r.status_code == 200:
-        raw_data = r.json()
-        if isinstance(raw_data, dict) and 'content' in raw_data and raw_data.get('encoding') == 'base64':
-          decoded_bytes = base64.b64decode(raw_data['content'])
-          raw_data = json.loads(decoded_bytes.decode('utf-8'))
-        elif isinstance(raw_data, dict) and 'download_url' in raw_data and 'portfolio' not in raw_data and 'stock' not in raw_data:
-          r_raw = requests.get(raw_data['download_url'], headers=headers_req, timeout=8)
-          if r_raw.status_code == 200:
-            raw_data = r_raw.json()
-        return jsonify({'success': True, 'data': raw_data})
-      elif r:
-        return jsonify({'success': False, 'error': f'HTTP {r.status_code}: {r.text}'})
-      else:
-        return jsonify({'success': False, 'error': f'Fetch failed after retries: {last_err}'})
+      import urllib.request
+      req = urllib.request.Request(url_target, headers={'User-Agent': user_agent})
+      with urllib.request.urlopen(req, timeout=10) as resp:
+        raw_data = json.loads(resp.read().decode('utf-8'))
+      return jsonify({'success': True, 'data': raw_data})
     except Exception as e:
       tb_str = traceback.format_exc()
       print(f"[JSON Load Error]\n{tb_str}")
-      return jsonify({'success': False, 'error': f'{str(e)} | Trace: {tb_str[:200]}...'})
+      return jsonify({'success': False, 'error': str(e)})
 
   if request.method == 'POST':
     try:
