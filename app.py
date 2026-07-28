@@ -1860,6 +1860,40 @@ JSON_EDITOR_HTML = """<!DOCTYPE html>
 </html>"""
 
 
+@app.route('/json/debug/')
+def json_debug():
+  """Debug endpoint: test fetching GitHub JSON with both urllib and curl_cffi."""
+  import urllib.request
+  results = {}
+
+  for label, url in [('portfolio', url_git_json), ('review', url_git_json_review)]:
+    # Test urllib
+    try:
+      req = urllib.request.Request(url, headers={'User-Agent': user_agent})
+      with urllib.request.urlopen(req, timeout=10) as resp:
+        body = resp.read().decode('utf-8')
+        data = json.loads(body)
+        results[f'{label}_urllib'] = {'ok': True, 'keys': list(data.keys()) if isinstance(data, dict) else f'type={type(data).__name__}, len={len(data)}'}
+    except Exception as e:
+      results[f'{label}_urllib'] = {'ok': False, 'error': str(e), 'trace': traceback.format_exc()[-300:]}
+
+    # Test curl_cffi
+    try:
+      r = requests.get(url, headers={'User-Agent': user_agent}, timeout=10)
+      data = r.json()
+      results[f'{label}_curl_cffi'] = {'ok': True, 'status': r.status_code, 'keys': list(data.keys()) if isinstance(data, dict) else f'type={type(data).__name__}, len={len(data)}'}
+    except Exception as e:
+      results[f'{label}_curl_cffi'] = {'ok': False, 'error': str(e), 'trace': traceback.format_exc()[-300:]}
+
+  results['env'] = {
+    'URL_GIT_JSON': url_git_json[:80] if url_git_json else None,
+    'URL_GIT_JSON_REVIEW': url_git_json_review[:80] if url_git_json_review else None,
+    'CONTENT_GIT_JSON': content_git_json[:80] if content_git_json else None,
+    'CONTENT_GIT_JSON_REVIEW': content_git_json_review[:80] if content_git_json_review else None,
+  }
+  return jsonify(results)
+
+
 @app.route('/json/', methods=['GET', 'POST'])
 def json_modifier():
   if request.method == 'GET' and request.args.get('action') == 'load':
