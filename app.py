@@ -1620,7 +1620,7 @@ JSON_EDITOR_HTML = """<!DOCTYPE html>
         document.getElementById('rule-rsi-low').value = rules.RsiLow ?? 30;
         document.getElementById('rule-display-period').value = rules.DisplayPeriod ?? 720;
 
-        document.getElementById('macro-ids').value = dataP2['macrom!cro'] || '';
+        document.getElementById('macro-ids').value = (dataP2 && dataP2['macrom!cro'] != null) ? dataP2['macrom!cro'] : '';
     }
 
     function addRowP2Stock() {
@@ -1867,7 +1867,15 @@ def json_modifier():
     try:
       r = requests.get(url_target, timeout=8)
       if r.status_code == 200:
-        return jsonify({'success': True, 'data': r.json()})
+        raw_data = r.json()
+        if isinstance(raw_data, dict) and 'content' in raw_data and raw_data.get('encoding') == 'base64':
+          decoded_bytes = base64.b64decode(raw_data['content'])
+          raw_data = json.loads(decoded_bytes.decode('utf-8'))
+        elif isinstance(raw_data, dict) and 'download_url' in raw_data and 'portfolio' not in raw_data and 'stock' not in raw_data:
+          r_raw = requests.get(raw_data['download_url'], timeout=8)
+          if r_raw.status_code == 200:
+            raw_data = r_raw.json()
+        return jsonify({'success': True, 'data': raw_data})
       else:
         return jsonify({'success': False, 'error': f'HTTP {r.status_code}'})
     except Exception as e:
