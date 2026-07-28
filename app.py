@@ -1238,11 +1238,19 @@ JSON_EDITOR_HTML = """<!DOCTYPE html>
             <div class="form-grid">
                 <div class="form-group">
                     <label>Sleep Start (Mins from Midnight):</label>
-                    <input type="number" id="ts-start" placeholder="e.g. 30 (00:30)" oninput="updateTimeReadable()">
+                    <input type="number" id="ts-0" placeholder="e.g. 30 (00:30)" oninput="updateTimeReadable()">
                 </div>
                 <div class="form-group">
                     <label>Sleep End (Mins from Midnight):</label>
-                    <input type="number" id="ts-end" placeholder="e.g. 450 (07:30)" oninput="updateTimeReadable()">
+                    <input type="number" id="ts-1" placeholder="e.g. 450 (07:30)" oninput="updateTimeReadable()">
+                </div>
+                <div class="form-group">
+                    <label>Leisure Start (Mins from Midnight):</label>
+                    <input type="number" id="ts-2" placeholder="e.g. 810 (13:30)" oninput="updateTimeReadable()">
+                </div>
+                <div class="form-group">
+                    <label>Leisure End (Mins from Midnight):</label>
+                    <input type="number" id="ts-3" placeholder="e.g. 1290 (21:30)" oninput="updateTimeReadable()">
                 </div>
             </div>
         </div>
@@ -1498,22 +1506,26 @@ JSON_EDITOR_HTML = """<!DOCTYPE html>
     }
 
     function updateTimeReadable() {
-        const s = parseInt(document.getElementById('ts-start').value) || 0;
-        const e = parseInt(document.getElementById('ts-end').value) || 0;
+        const ts0 = parseInt(document.getElementById('ts-0').value) || 0;
+        const ts1 = parseInt(document.getElementById('ts-1').value) || 0;
+        const ts2 = parseInt(document.getElementById('ts-2').value) || 0;
+        const ts3 = parseInt(document.getElementById('ts-3').value) || 0;
         const formatMin = (m) => {
             const hrs = String(Math.floor(m / 60)).padStart(2, '0');
             const mins = String(m % 60).padStart(2, '0');
             return `${hrs}:${mins}`;
         };
-        document.getElementById('time-readable').innerText = `Sleep Interval: ${formatMin(s)} ~ ${formatMin(e)}`;
+        document.getElementById('time-readable').innerText = `Sleep: ${formatMin(ts0)} ~ ${formatMin(ts1)} | Leisure: ${formatMin(ts2)} ~ ${formatMin(ts3)}`;
     }
 
     // --- TAB 1 Rendering ---
     function renderP1() {
         if (!dataP1) return;
-        const ts = dataP1.timestamp || [30, 450];
-        document.getElementById('ts-start').value = ts[0];
-        document.getElementById('ts-end').value = ts[1];
+        const ts = dataP1.timestamp || [30, 450, 810, 1290];
+        document.getElementById('ts-0').value = ts[0] ?? 30;
+        document.getElementById('ts-1').value = ts[1] ?? 450;
+        document.getElementById('ts-2').value = ts[2] ?? 810;
+        document.getElementById('ts-3').value = ts[3] ?? 1290;
         updateTimeReadable();
 
         const tbody = document.getElementById('body-p1');
@@ -1536,7 +1548,7 @@ JSON_EDITOR_HTML = """<!DOCTYPE html>
     }
 
     function addRowP1() {
-        if (!dataP1) dataP1 = { timestamp: [30, 450], portfolio: [] };
+        if (!dataP1) dataP1 = { timestamp: [30, 450, 810, 1290], portfolio: [] };
         dataP1.portfolio.push(["NEW.TW", 100, 200]);
         renderP1();
     }
@@ -1797,9 +1809,11 @@ JSON_EDITOR_HTML = """<!DOCTYPE html>
         let finalData = null;
 
         if (activeTab === 'portfolio') {
-            const s = parseInt(document.getElementById('ts-start').value) || 0;
-            const e = parseInt(document.getElementById('ts-end').value) || 0;
-            dataP1.timestamp = [s, e];
+            const ts0 = parseInt(document.getElementById('ts-0').value) || 0;
+            const ts1 = parseInt(document.getElementById('ts-1').value) || 0;
+            const ts2 = parseInt(document.getElementById('ts-2').value) || 0;
+            const ts3 = parseInt(document.getElementById('ts-3').value) || 0;
+            dataP1.timestamp = [ts0, ts1, ts2, ts3];
             finalData = dataP1;
         } else {
             dataP2.stockCheckingRule = {
