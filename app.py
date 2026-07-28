@@ -181,7 +181,7 @@ def get_fitx_histock(session):
   
   if r.status_code == 200:
     r.encoding = 'utf-8'
-    resp = r.text
+    resp = r.text or ''
     items = resp.split('</span>')
 
     if len(items) >= 7:
@@ -394,8 +394,8 @@ def fire():
 
       for x, jp in enumerate(yahoo_portfolio):
         s = jp.get('symbol', '')
-        symbol_name = jp.get('symbolName', s)
-        sn = (symbol_name.split(' '))[0] if symbol_name else s
+        symbol_name = jp.get('symbolName') or s
+        sn = str(symbol_name).split(' ')[0] if symbol_name else s
 
         if 'change' not in jp:
           continue
@@ -496,21 +496,21 @@ def fire():
 
           # Judge criteria
           if delta > delta_u:
-            msg = f"{base_hdr}: <code>${price:.{precision}f}</code> 🔥 <b>+{delta*100:.{precision}f}% ▲</b>"  # Check quick +1.618% price change
+            msg = f"{base_hdr}: <code>{price:.{precision}f}</code> 🔥 <b>+{delta*100:.{precision}f}% ▲</b>"  # Check quick +1.618% price change
             update_flag = True
 
           if delta < delta_d:
-            msg = f"{base_hdr}: <code>${price:.{precision}f}</code> ❄️ <b>{delta*100:.{precision}f}% ▼</b>"  # Check quick -1.618% price change
+            msg = f"{base_hdr}: <code>{price:.{precision}f}</code> ❄️ <b>{delta*100:.{precision}f}% ▼</b>"  # Check quick -1.618% price change
             update_flag = True
 
           # Skip small price variation (0.618%)
           if abs(delta) > delta_a:  # Smooth report, only report when variation > 0.618%
             if price < portfolio[port_idx][IDX_F]:  # Check low price
-              msg = f"{base_hdr}: <code>${price:.{precision}f}</code> ({delta*100:+.2f}%) ⚠️ <b>&lt; {portfolio[port_idx][IDX_F]}</b>"
+              msg = f"{base_hdr}: <code>{price:.{precision}f}</code> ({delta*100:+.2f}%) ⚠️ <b>&lt; {portfolio[port_idx][IDX_F]}</b>"
               update_flag = True
 
             if price > portfolio[port_idx][IDX_C]:  # Check high price
-              msg = f"{base_hdr}: <code>${price:.{precision}f}</code> ({delta*100:+.2f}%) 🚀 <b>&gt; {portfolio[port_idx][IDX_C]}</b>"
+              msg = f"{base_hdr}: <code>{price:.{precision}f}</code> ({delta*100:+.2f}%) 🚀 <b>&gt; {portfolio[port_idx][IDX_C]}</b>"
               update_flag = True
 
           if update_flag == True:
@@ -518,13 +518,13 @@ def fire():
 
         else:  # 1st time get price and msg
           if price < portfolio[port_idx][IDX_F]:  # Check low price
-            msg = f"{base_hdr}: <code>${price:.{precision}f}</code> ⚠️ <b>&lt; {portfolio[port_idx][IDX_F]}</b>"
+            msg = f"{base_hdr}: <code>{price:.{precision}f}</code> ⚠️ <b>&lt; {portfolio[port_idx][IDX_F]}</b>"
 
           elif price > portfolio[port_idx][IDX_C]:  # Check high price
-            msg = f"{base_hdr}: <code>${price:.{precision}f}</code> 🚀 <b>&gt; {portfolio[port_idx][IDX_C]}</b>"
+            msg = f"{base_hdr}: <code>{price:.{precision}f}</code> 🚀 <b>&gt; {portfolio[port_idx][IDX_C]}</b>"
 
           else:
-            msg = f"{base_hdr}: <code>${price:.{precision}f}</code>"
+            msg = f"{base_hdr}: <code>{price:.{precision}f}</code>"
 
           portfolio[port_idx][IDX_P] = price  # To append curent price (new list item)
 
@@ -1864,20 +1864,23 @@ def json_modifier():
   if request.method == 'GET' and request.args.get('action') == 'load':
     target = request.args.get('target', 'portfolio')
     url_target = url_git_json_review if target == 'review' else url_git_json
+    headers_req = {'User-Agent': user_agent}
+    if token_git_json:
+      headers_req['Authorization'] = f'Bearer {token_git_json}'
     try:
-      r = requests.get(url_target, timeout=8)
+      r = requests.get(url_target, headers=headers_req, timeout=8)
       if r.status_code == 200:
         raw_data = r.json()
         if isinstance(raw_data, dict) and 'content' in raw_data and raw_data.get('encoding') == 'base64':
           decoded_bytes = base64.b64decode(raw_data['content'])
           raw_data = json.loads(decoded_bytes.decode('utf-8'))
         elif isinstance(raw_data, dict) and 'download_url' in raw_data and 'portfolio' not in raw_data and 'stock' not in raw_data:
-          r_raw = requests.get(raw_data['download_url'], timeout=8)
+          r_raw = requests.get(raw_data['download_url'], headers=headers_req, timeout=8)
           if r_raw.status_code == 200:
             raw_data = r_raw.json()
         return jsonify({'success': True, 'data': raw_data})
       else:
-        return jsonify({'success': False, 'error': f'HTTP {r.status_code}'})
+        return jsonify({'success': False, 'error': f'HTTP {r.status_code}: {r.text}'})
     except Exception as e:
       return jsonify({'success': False, 'error': str(e)})
 
