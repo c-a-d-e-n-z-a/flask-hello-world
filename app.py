@@ -1899,15 +1899,21 @@ def json_modifier():
   if request.method == 'GET' and request.args.get('action') == 'load':
     target = request.args.get('target', 'portfolio')
     url_target = url_git_json_review if target == 'review' else url_git_json
+    if not url_target:
+      return jsonify({'success': False, 'error': f'URL not configured: {"URL_GIT_JSON_REVIEW" if target == "review" else "URL_GIT_JSON"} is not set'})
     try:
       import urllib.request
       req = urllib.request.Request(url_target, headers={'User-Agent': user_agent})
       with urllib.request.urlopen(req, timeout=10) as resp:
         raw_data = json.loads(resp.read().decode('utf-8'))
+      # Handle GitHub API response (base64 encoded content)
+      if isinstance(raw_data, dict) and 'content' in raw_data and raw_data.get('encoding') == 'base64':
+        decoded_bytes = base64.b64decode(raw_data['content'])
+        raw_data = json.loads(decoded_bytes.decode('utf-8'))
       return jsonify({'success': True, 'data': raw_data})
     except Exception as e:
       tb_str = traceback.format_exc()
-      print(f"[JSON Load Error]\n{tb_str}")
+      print(f"[JSON Load Error] url={url_target}\n{tb_str}")
       return jsonify({'success': False, 'error': str(e)})
 
   if request.method == 'POST':
