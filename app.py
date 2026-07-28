@@ -6,6 +6,7 @@ import os
 import pickle
 import sys
 import time
+import traceback
 from datetime import date, datetime, timedelta
 from zoneinfo import ZoneInfo
 
@@ -1867,9 +1868,25 @@ def json_modifier():
     headers_req = {'User-Agent': user_agent}
     if token_git_json:
       headers_req['Authorization'] = f'Bearer {token_git_json}'
+    
+    last_err = None
+    r = None
+    for attempt in range(3):
+      try:
+        r = requests.get(url_target, headers=headers_req, timeout=8)
+        if r.status_code == 200:
+          break
+        elif r.status_code in (403, 429):
+          print(f"[HTTP {r.status_code}] Rate limited or forbidden. Retrying in 1s (Attempt {attempt+1}/3)...")
+          time.sleep(1)
+        else:
+          time.sleep(0.5)
+      except Exception as ex:
+        last_err = ex
+        time.sleep(1)
+
     try:
-      r = requests.get(url_target, headers=headers_req, timeout=8)
-      if r.status_code == 200:
+      if r and r.status_code == 200:
         raw_data = r.json()
         if isinstance(raw_data, dict) and 'content' in raw_data and raw_data.get('encoding') == 'base64':
           decoded_bytes = base64.b64decode(raw_data['content'])
@@ -1879,10 +1896,14 @@ def json_modifier():
           if r_raw.status_code == 200:
             raw_data = r_raw.json()
         return jsonify({'success': True, 'data': raw_data})
-      else:
+      elif r:
         return jsonify({'success': False, 'error': f'HTTP {r.status_code}: {r.text}'})
+      else:
+        return jsonify({'success': False, 'error': f'Fetch failed after retries: {last_err}'})
     except Exception as e:
-      return jsonify({'success': False, 'error': str(e)})
+      tb_str = traceback.format_exc()
+      print(f"[JSON Load Error]\n{tb_str}")
+      return jsonify({'success': False, 'error': f'{str(e)} | Trace: {tb_str[:200]}...'})
 
   if request.method == 'POST':
     try:
