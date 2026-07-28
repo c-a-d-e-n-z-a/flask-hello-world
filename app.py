@@ -29,13 +29,13 @@ bot_token = os.environ.get('BOT_TOKEN')
 chat_id = os.environ.get('CHAT_ID')
 
 # Json urls & API endpoints
-url_git_json = os.environ.get('URL_GIT_JSON') or 'https://github.com/c-a-d-e-n-z-a/json/raw/refs/heads/main/portfolio.json'
-url_git_json_review = os.environ.get('URL_GIT_JSON_REVIEW') or 'https://github.com/c-a-d-e-n-z-a/json/raw/refs/heads/main/portfolio_review.json'
+url_git_json = os.environ.get('URL_GIT_JSON')
+url_git_json_review = os.environ.get('URL_GIT_JSON_REVIEW')
 macd_git_json = os.environ.get('MACD_GIT_JSON')
 
 token_git_json = os.environ.get('TOKEN_GIT_JSON')
-content_git_json = os.environ.get('CONTENT_GIT_JSON') or 'https://api.github.com/repos/c-a-d-e-n-z-a/json/contents/portfolio.json'
-content_git_json_review = os.environ.get('CONTENT_GIT_JSON_REVIEW') or 'https://api.github.com/repos/c-a-d-e-n-z-a/json/contents/portfolio_review.json'
+content_git_json = os.environ.get('CONTENT_GIT_JSON')
+content_git_json_review = os.environ.get('CONTENT_GIT_JSON_REVIEW')
 
 # API KEY
 gemini_api_key =  os.environ.get('API_KEY')
