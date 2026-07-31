@@ -460,11 +460,12 @@ def fire():
         #  s = s[:s_dot]
 
         precision = 4 if price < 1 else 2
+        sd_str = f"{sd:+.{precision}f}" if isinstance(sd, (int, float)) else str(sd)
 
         safe_s = html.escape(s)
         safe_sn = html.escape(sn)
         safe_sdp_radio = html.escape(sdp_radio)
-        base_hdr = f"<b>{sc} {safe_s} ({safe_sn})</b> [<b>{sdp}</b> {safe_sdp_radio}]"
+        base_hdr = f"<b>{sc} {safe_s} ({safe_sn})</b> [<b>{sd_str} {sdp}</b> {safe_sdp_radio}]"
 
         if portfolio[port_idx][IDX_P] is not None:  # Already has history record
           delta = (price - portfolio[port_idx][IDX_P]) / portfolio[port_idx][IDX_P]
@@ -473,7 +474,7 @@ def fire():
             sc = sc + a_u
           else:
             sc = sc + a_d
-          base_hdr = f"<b>{sc} {safe_s} ({safe_sn})</b> [<b>{sdp}</b> {safe_sdp_radio}]"
+          base_hdr = f"<b>{sc} {safe_s} ({safe_sn})</b> [<b>{sd_str} {sdp}</b> {safe_sdp_radio}]"
 
           update_flag = False
 
@@ -495,23 +496,25 @@ def fire():
             delta_d = DELTA_I_D
             delta_a = DELTA_I_A
 
+          delta_pts = price - portfolio[port_idx][IDX_P]
+
           # Judge criteria
           if delta > delta_u:
-            msg = f"{base_hdr}: <code>{price:.{precision}f}</code> 🔥 <b>+{delta*100:.{precision}f}% ▲</b>"  # Check quick +1.618% price change
+            msg = f"{base_hdr}: <code>{price:.{precision}f}</code> 🔥 <b>{delta_pts:+.{precision}f} +{delta*100:.{precision}f}% ▲</b>"  # Check quick +1.618% price change
             update_flag = True
 
           if delta < delta_d:
-            msg = f"{base_hdr}: <code>{price:.{precision}f}</code> ❄️ <b>{delta*100:.{precision}f}% ▼</b>"  # Check quick -1.618% price change
+            msg = f"{base_hdr}: <code>{price:.{precision}f}</code> ❄️ <b>{delta_pts:+.{precision}f} {delta*100:.{precision}f}% ▼</b>"  # Check quick -1.618% price change
             update_flag = True
 
           # Skip small price variation (0.618%)
           if abs(delta) > delta_a:  # Smooth report, only report when variation > 0.618%
             if price < portfolio[port_idx][IDX_F]:  # Check low price
-              msg = f"{base_hdr}: <code>{price:.{precision}f}</code> ({delta*100:+.2f}%) ⚠️ <b>&lt; {portfolio[port_idx][IDX_F]}</b>"
+              msg = f"{base_hdr}: <code>{price:.{precision}f}</code> ({delta_pts:+.{precision}f} {delta*100:+.2f}%) ⚠️ <b>&lt; {portfolio[port_idx][IDX_F]}</b>"
               update_flag = True
 
             if price > portfolio[port_idx][IDX_C]:  # Check high price
-              msg = f"{base_hdr}: <code>{price:.{precision}f}</code> ({delta*100:+.2f}%) 🚀 <b>&gt; {portfolio[port_idx][IDX_C]}</b>"
+              msg = f"{base_hdr}: <code>{price:.{precision}f}</code> ({delta_pts:+.{precision}f} {delta*100:+.2f}%) 🚀 <b>&gt; {portfolio[port_idx][IDX_C]}</b>"
               update_flag = True
 
           if update_flag == True:
