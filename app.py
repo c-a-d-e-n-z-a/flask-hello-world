@@ -1209,6 +1209,10 @@ JSON_EDITOR_HTML = """<!DOCTYPE html>
 
         .spinner { border: 3px solid rgba(255,255,255,0.3); border-top: 3px solid #fff; border-radius: 50%; width: 18px; height: 18px; animation: spin 0.8s linear infinite; display: none; }
         @keyframes spin { 0% { transform: rotate(0deg); } 100% { transform: rotate(360deg); } }
+
+        .author-tag { display: inline-flex; align-items: center; gap: 0.35rem; background: rgba(15, 23, 42, 0.6); border: 1px solid var(--border-card); border-radius: 0.5rem; padding: 0.35rem 0.5rem; }
+        .author-tag input { width: 120px; padding: 0.25rem 0.4rem; font-size: 0.85rem; }
+        .author-tag .btn-danger { padding: 0.2rem 0.4rem; font-size: 0.7rem; line-height: 1; }
     </style>
 </head>
 <body>
@@ -1256,6 +1260,17 @@ JSON_EDITOR_HTML = """<!DOCTYPE html>
                     <label>Leisure End (Mins from Midnight):</label>
                     <input type="number" id="ts-3" placeholder="e.g. 1290 (21:30)" oninput="updateTimeReadable()">
                 </div>
+            </div>
+        </div>
+
+        <div class="card">
+            <div class="card-header">
+                <div class="card-title">👤 Author List (PTT)</div>
+                <span id="author-count" style="font-size: 0.85rem; color: var(--text-muted); font-weight: 600;"></span>
+            </div>
+            <div id="author-container" style="display: flex; flex-wrap: wrap; gap: 0.5rem; margin-bottom: 0.75rem;"></div>
+            <div style="margin-top: 0.5rem;">
+                <button class="btn btn-secondary btn-sm" onclick="addAuthor()">➕ Add Author</button>
             </div>
         </div>
 
@@ -1549,6 +1564,8 @@ JSON_EDITOR_HTML = """<!DOCTYPE html>
             `;
             tbody.appendChild(tr);
         });
+
+        renderAuthors();
     }
 
     function addRowP1() {
@@ -1569,6 +1586,36 @@ JSON_EDITOR_HTML = """<!DOCTYPE html>
     function delP1(idx) {
         dataP1.portfolio.splice(idx, 1);
         renderP1();
+    }
+
+    // --- Author List Rendering ---
+    function renderAuthors() {
+        if (!dataP1) return;
+        if (!dataP1.author) dataP1.author = [];
+        const container = document.getElementById('author-container');
+        container.innerHTML = '';
+        dataP1.author.forEach((name, i) => {
+            const tag = document.createElement('div');
+            tag.className = 'author-tag';
+            tag.innerHTML = `
+                <input type="text" value="${name || ''}" onchange="dataP1.author[${i}] = this.value">
+                <button class="btn btn-danger" onclick="delAuthor(${i})">✕</button>
+            `;
+            container.appendChild(tag);
+        });
+        document.getElementById('author-count').innerText = `${dataP1.author.length} author(s)`;
+    }
+
+    function addAuthor() {
+        if (!dataP1) dataP1 = { timestamp: [30, 450, 810, 1290], portfolio: [], author: [] };
+        if (!dataP1.author) dataP1.author = [];
+        dataP1.author.push('NewAuthor');
+        renderAuthors();
+    }
+
+    function delAuthor(idx) {
+        dataP1.author.splice(idx, 1);
+        renderAuthors();
     }
 
     // --- TAB 2 Rendering ---
