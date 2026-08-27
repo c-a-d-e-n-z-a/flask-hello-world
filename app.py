@@ -114,12 +114,22 @@ def ma_calculation(ticker, session, use_adj=True):
     r.encoding = 'utf-8'
     json_history = r.json()
 
-    close_raw = json_history["chart"]["result"][0]["indicators"]["quote"][0]["close"]
+    quote_data = json_history["chart"]["result"][0]["indicators"]["quote"][0]
+    if "close" not in quote_data:
+      print(f'{ticker[0]}: API response missing "close" data', file=sys.stdout)
+      return [None, None, None, None, None, None, None, None, None, None]
+
+    close_raw = quote_data["close"]
     if use_adj == True:
-      close = json_history["chart"]["result"][0]["indicators"]["adjclose"][0]["adjclose"]
-      # Fallback to close if adjclose has more Nones
-      if None in close and close.count(None) > close_raw.count(None):
-        print(f'{ticker[0]}: adjclose has {close.count(None)} None(s), falling back to close ({close_raw.count(None)})', file=sys.stdout)
+      adjclose_data = json_history["chart"]["result"][0]["indicators"].get("adjclose")
+      if adjclose_data and "adjclose" in adjclose_data[0]:
+        close = adjclose_data[0]["adjclose"]
+        # Fallback to close if adjclose has more Nones
+        if None in close and close.count(None) > close_raw.count(None):
+          print(f'{ticker[0]}: adjclose has {close.count(None)} None(s), falling back to close ({close_raw.count(None)})', file=sys.stdout)
+          close = close_raw
+      else:
+        print(f'{ticker[0]}: adjclose unavailable, falling back to close', file=sys.stdout)
         close = close_raw
     else:
       close = close_raw
@@ -686,15 +696,16 @@ def get_stock_data(ticker, start_date, end_date, session, crumb=YAHOO_CRUMB):
   data = r.json()
   result = data["chart"]["result"][0]
   quote = result["indicators"]["quote"][0]
-  adjclose = result["indicators"]["adjclose"][0]["adjclose"]
+  adjclose_data = result["indicators"].get("adjclose")
+  adjclose = adjclose_data[0]["adjclose"] if (adjclose_data and "adjclose" in adjclose_data[0]) else quote.get("close", [])
   df = pd.DataFrame({
     "Date": pd.to_datetime(result["timestamp"], unit='s'),
-    "Open": quote["open"],
-    "High": quote["high"],
-    "Low": quote["low"],
-    "Close": quote["close"],
+    "Open": quote.get("open"),
+    "High": quote.get("high"),
+    "Low": quote.get("low"),
+    "Close": quote.get("close"),
     "Adj Close": adjclose,
-    "Volume": quote["volume"]
+    "Volume": quote.get("volume")
   }).set_index("Date")
   df.name = ticker
   return df
