@@ -142,7 +142,89 @@ def calc_macd_hist_r_fall(close):
 
 
 ################################################################################################################################################################
-def ma_calculation(ticker, session, use_adj=True, return_macd=False):
+def calc_kalman_filter_signal(close, r=10.0, q1=0.01, q2=0.01):
+  """
+  Calculate Kalman Filter velocity and zero-crossing signal:
+  Matches StockReview report.py stock_check_critical_points_after_resample()
+  Returns:
+    '[KF] 多空轉換 (空轉多)' if v_prev < 0.0 and v_today >= 0.0
+    '[KF] 多空轉換 (多轉空)' if v_prev >= 0.0 and v_today < 0.0
+    None otherwise
+  """
+  if not close or len(close) < 3:
+    return None
+
+  try:
+    prices = np.asarray(close, dtype=np.float64)
+    n = len(prices)
+
+    first_valid_idx = -1
+    for idx in range(n):
+      if not np.isnan(prices[idx]):
+        first_valid_idx = idx
+        break
+
+    if first_valid_idx == -1 or n - first_valid_idx < 3:
+      return None
+
+    p11, p12, p21, p22 = 1.0, 0.0, 0.0, 1.0
+    curr_x = prices[first_valid_idx]
+    curr_v = 0.0
+    prev_v = 0.0
+
+    for i in range(first_valid_idx + 1, n):
+      c = prices[i]
+      if np.isnan(c):
+        prev_v = curr_v
+        continue
+
+      x_pred = curr_x + curr_v
+      v_pred = curr_v
+      p11_pred = p11 + p12 + p21 + p22 + q1
+      p12_pred = p12 + p22
+      p21_pred = p21 + p22
+      p22_pred = p22 + q2
+
+      y_res = c - x_pred
+      s_kf = max(p11_pred + r, 1e-10)
+      k1 = p11_pred / s_kf
+      k2 = p21_pred / s_kf
+
+      curr_x = x_pred + k1 * y_res
+      prev_v = curr_v
+      curr_v = v_pred + k2 * y_res
+
+      ik1 = 1.0 - k1
+      new_p11 = ik1 * ik1 * p11_pred + k1 * k1 * r
+      new_p12 = ik1 * (p12_pred - k2 * p11_pred) + k1 * k2 * r
+      new_p21 = new_p12
+      new_p22 = (k2 * k2 * p11_pred - k2 * p21_pred - k2 * p12_pred +
+                 p22_pred + k2 * k2 * r)
+
+      p11 = max(new_p11, 1e-9)
+      p12 = new_p12
+      p21 = new_p21
+      p22 = max(new_p22, 1e-9)
+
+    v_today = curr_v
+    v_prev = prev_v
+
+    if not (np.isnan(v_today) or np.isnan(v_prev)):
+      if (v_prev < 0.0) and (v_today >= 0.0):
+        return '[KF] 多空轉換 (空轉多)'
+      elif (v_prev >= 0.0) and (v_today < 0.0):
+        return '[KF] 多空轉換 (多轉空)'
+
+    return None
+  except Exception as e:
+    print(f"Error calculating Kalman Filter signal: {e}", file=sys.stdout)
+    return None
+
+
+
+
+################################################################################################################################################################
+def ma_calculation(ticker, session, use_adj=True, return_macd=False, return_indicators=False):
 
   today = date.today()
   startDate = today - timedelta(days=365)
@@ -169,6 +251,8 @@ def ma_calculation(ticker, session, use_adj=True, return_macd=False):
     if not result:
       print(f'{ticker[0]}: No chart result in response', file=sys.stdout)
       res = [None, None, None, None, None, None, None, None, None, None]
+      if return_indicators:
+        return (res, 0, None)
       return (res, 0) if return_macd else res
 
     close_raw = result[0]["indicators"]["quote"][0]["close"]
@@ -193,6 +277,8 @@ def ma_calculation(ticker, session, use_adj=True, return_macd=False):
         close.pop(0)
       if len(close) == 0:
         res = [None, None, None, None, None, None, None, None, None, None]
+        if return_indicators:
+          return (res, 0, None)
         return (res, 0) if return_macd else res
 
     n = len(close)
@@ -220,8 +306,11 @@ def ma_calculation(ticker, session, use_adj=True, return_macd=False):
     if n < 200:
       print(f'{ticker[0]}: Only {n} data points, MA200 unavailable', file=sys.stdout)
 
-    macd_fall = calc_macd_hist_r_fall(close) if return_macd else 0
+    macd_fall = calc_macd_hist_r_fall(close) if (return_macd or return_indicators) else 0
+    kf_sig = calc_kalman_filter_signal(close) if return_indicators else None
     res = [None, ma10, ma20, ma60, ma200, ma10_1, ma20_1, ma60_1, ma200_1, std200]
+    if return_indicators:
+      return (res, macd_fall, kf_sig)
     return (res, macd_fall) if return_macd else res
 
   else:
@@ -229,6 +318,8 @@ def ma_calculation(ticker, session, use_adj=True, return_macd=False):
     print(f'{ticker[0]}:\n  Error in price list: {url_history}',
           file=sys.stdout)
     res = [None, None, None, None, None, None, None, None, None, None]
+    if return_indicators:
+      return (res, 0, None)
     return (res, 0) if return_macd else res
 
 
@@ -264,6 +355,7 @@ def get_fitx_histock(session):
 
 _fire_timestamp = [30, 450, 810, 1290]  # persists across requests
 _macd_w_is_fall = {}  # persists across requests
+_kf_signals = {}  # persists across requests
 
 ################################################################################################################################################################
 app = Flask(__name__)
@@ -283,7 +375,7 @@ def index():
 @app.route('/fire/')
 def fire():
 
-  global _fire_timestamp, _macd_w_is_fall
+  global _fire_timestamp, _macd_w_is_fall, _kf_signals
 
   gc.collect()
 
@@ -292,6 +384,7 @@ def fire():
   portfolio_reload = 24
   leisure_time = False
   macd_w_is_fall = dict(_macd_w_is_fall)
+  kf_signals = dict(_kf_signals)
 
   timestamp = _fire_timestamp  # use persisted value; updated when JSON loads
 
@@ -414,11 +507,15 @@ def fire():
         print('--------------------------------------------------------------------------------')
 
     macd_w_is_fall = {}
+    kf_signals = {}
     for p in portfolio:
-      ma, is_fall = ma_calculation(p, session, return_macd=True)
+      ma, is_fall, kf_sig = ma_calculation(p, session, return_indicators=True)
       #ma = ema_calculation(p, session)
       macd_w_is_fall[p[IDX_T]] = is_fall
       macd_w_is_fall[p[IDX_T].upper()] = is_fall
+      if kf_sig:
+        kf_signals[p[IDX_T]] = kf_sig
+        kf_signals[p[IDX_T].upper()] = kf_sig
       if reset_portfolio == True:
         p.extend(ma)
       else:
@@ -428,6 +525,8 @@ def fire():
 
     print("\nMACD Hist (W) fall check (calculated)")
     print(macd_w_is_fall)
+    print("\nKalman Filter zero-crossing check (calculated)")
+    print(kf_signals)
 
     if not macd_w_is_fall:
       try:
@@ -441,6 +540,7 @@ def fire():
         pass
 
     _macd_w_is_fall = dict(macd_w_is_fall)
+    _kf_signals = dict(kf_signals)
 
     msg_toast.append(get_fitx_histock(session))
 
@@ -682,6 +782,11 @@ def fire():
                 msg += f' {l_c_u}<b>MA2060={ma20:.{precision}f},{ma60:.{precision}f}</b>'
               if (ma20 < ma60) and (ma20_1 >= ma60_1):
                 msg += f' {l_c_d}<b>MA2060={ma20:.{precision}f},{ma60:.{precision}f}</b>'
+
+            # Kalman Filter Zero-crossing
+            ticker_kf = portfolio[port_idx][IDX_T]
+            if ticker_kf in kf_signals and kf_signals[ticker_kf]:
+              msg += f' <b>{kf_signals[ticker_kf]}</b>'
 
             # Add chart
             if (l_c_u in msg) or (l_c_d in msg):
