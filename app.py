@@ -19,6 +19,11 @@ import pandas as pd
 import numpy as np
 from pyecharts import options as opts
 from pyecharts.charts import Line
+try:
+  import talib
+except ImportError:
+  talib = None
+
 
 
 
@@ -91,7 +96,53 @@ l_c_d = '\U0000274E'  # MA corss downwards mark ❎
 
 
 ################################################################################################################################################################
-def ma_calculation(ticker, session, use_adj=True):
+def calc_macd_hist_r_fall(close):
+  """
+  Calculate MACD Hist (R) fall: fast=50, slow=120, signal=30 (matches StockReview report.py)
+  Returns 1 if hist[-1] < hist[-2], else 0.
+  """
+  if not close or len(close) < 150:
+    return 0
+
+  try:
+    close_arr = np.array(close, dtype=float)
+    if talib is not None:
+      _, _, hist = talib.MACD(close_arr, fastperiod=50, slowperiod=120, signalperiod=30)
+    else:
+      # Exact NumPy calculation identical to TA-Lib MACD (standard SMA initialization)
+      def _ema(arr, period):
+        n = len(arr)
+        if n < period:
+          return np.full(n, np.nan)
+        res = np.full(n, np.nan)
+        res[period - 1] = np.mean(arr[:period])
+        alpha = 2.0 / (period + 1.0)
+        for i in range(period, n):
+          res[i] = arr[i] * alpha + res[i - 1] * (1.0 - alpha)
+        return res
+
+      fast_ema = _ema(close_arr, 50)
+      slow_ema = _ema(close_arr, 120)
+      macd = fast_ema - slow_ema
+
+      valid_start = 120 - 1
+      sig_valid = _ema(macd[valid_start:], 30)
+      sig = np.full_like(macd, np.nan)
+      sig[valid_start:] = sig_valid
+      hist = macd - sig
+
+    if len(hist) >= 2 and not np.isnan(hist[-1]) and not np.isnan(hist[-2]):
+      return 1 if hist[-1] < hist[-2] else 0
+    return 0
+  except Exception as e:
+    print(f"Error calculating MACD Hist (R): {e}", file=sys.stdout)
+    return 0
+
+
+
+
+################################################################################################################################################################
+def ma_calculation(ticker, session, use_adj=True, return_macd=False):
 
   today = date.today()
   startDate = today - timedelta(days=365)
@@ -114,9 +165,15 @@ def ma_calculation(ticker, session, use_adj=True):
     r.encoding = 'utf-8'
     json_history = r.json()
 
-    close_raw = json_history["chart"]["result"][0]["indicators"]["quote"][0]["close"]
+    result = json_history.get("chart", {}).get("result")
+    if not result:
+      print(f'{ticker[0]}: No chart result in response', file=sys.stdout)
+      res = [None, None, None, None, None, None, None, None, None, None]
+      return (res, 0) if return_macd else res
+
+    close_raw = result[0]["indicators"]["quote"][0]["close"]
     if use_adj == True:
-      close = json_history["chart"]["result"][0]["indicators"]["adjclose"][0]["adjclose"]
+      close = result[0]["indicators"]["adjclose"][0]["adjclose"]
       # Fallback to close if adjclose has more Nones
       if None in close and close.count(None) > close_raw.count(None):
         print(f'{ticker[0]}: adjclose has {close.count(None)} None(s), falling back to close ({close_raw.count(None)})', file=sys.stdout)
@@ -135,7 +192,8 @@ def ma_calculation(ticker, session, use_adj=True):
       while close and close[0] is None:
         close.pop(0)
       if len(close) == 0:
-        return [None, None, None, None, None, None, None, None, None, None]
+        res = [None, None, None, None, None, None, None, None, None, None]
+        return (res, 0) if return_macd else res
 
     n = len(close)
     precision = 4 if close[-1] < 1 else 2
@@ -162,13 +220,16 @@ def ma_calculation(ticker, session, use_adj=True):
     if n < 200:
       print(f'{ticker[0]}: Only {n} data points, MA200 unavailable', file=sys.stdout)
 
-    return [None, ma10, ma20, ma60, ma200, ma10_1, ma20_1, ma60_1, ma200_1, std200]
+    macd_fall = calc_macd_hist_r_fall(close) if return_macd else 0
+    res = [None, ma10, ma20, ma60, ma200, ma10_1, ma20_1, ma60_1, ma200_1, std200]
+    return (res, macd_fall) if return_macd else res
 
   else:
 
     print(f'{ticker[0]}:\n  Error in price list: {url_history}',
           file=sys.stdout)
-    return [None, None, None, None, None, None, None, None, None]
+    res = [None, None, None, None, None, None, None, None, None, None]
+    return (res, 0) if return_macd else res
 
 
 
@@ -202,6 +263,7 @@ def get_fitx_histock(session):
 
 
 _fire_timestamp = [30, 450, 810, 1290]  # persists across requests
+_macd_w_is_fall = {}  # persists across requests
 
 ################################################################################################################################################################
 app = Flask(__name__)
@@ -221,7 +283,7 @@ def index():
 @app.route('/fire/')
 def fire():
 
-  global _fire_timestamp
+  global _fire_timestamp, _macd_w_is_fall
 
   gc.collect()
 
@@ -229,7 +291,7 @@ def fire():
   portfolio_cnt = 0
   portfolio_reload = 24
   leisure_time = False
-  macd_w_is_fall = {}
+  macd_w_is_fall = dict(_macd_w_is_fall)
 
   timestamp = _fire_timestamp  # use persisted value; updated when JSON loads
 
@@ -351,9 +413,12 @@ def fire():
         print(portfolio)
         print('--------------------------------------------------------------------------------')
 
+    macd_w_is_fall = {}
     for p in portfolio:
-      ma = ma_calculation(p, session)
+      ma, is_fall = ma_calculation(p, session, return_macd=True)
       #ma = ema_calculation(p, session)
+      macd_w_is_fall[p[IDX_T]] = is_fall
+      macd_w_is_fall[p[IDX_T].upper()] = is_fall
       if reset_portfolio == True:
         p.extend(ma)
       else:
@@ -361,12 +426,21 @@ def fire():
 
       print(p)
 
-    r = session.get(macd_git_json, headers=headers, timeout=5)
-    if r.status_code == 200:
-      r.encoding = 'utf-8'
-      macd_w_is_fall = r.json()
-      print("\nMACD Hist (W) fall check")
-      print(macd_w_is_fall)
+    print("\nMACD Hist (W) fall check (calculated)")
+    print(macd_w_is_fall)
+
+    if not macd_w_is_fall:
+      try:
+        r = session.get(macd_git_json, headers=headers, timeout=5)
+        if r.status_code == 200:
+          r.encoding = 'utf-8'
+          macd_w_is_fall = r.json()
+          print("\nMACD Hist (W) fall check (fallback to git json)")
+          print(macd_w_is_fall)
+      except Exception:
+        pass
+
+    _macd_w_is_fall = dict(macd_w_is_fall)
 
     msg_toast.append(get_fitx_histock(session))
 
