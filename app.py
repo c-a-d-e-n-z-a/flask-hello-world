@@ -37,7 +37,6 @@ chat_id = os.environ.get('CHAT_ID')
 # Json urls & API endpoints
 url_git_json = os.environ.get('URL_GIT_JSON')
 url_git_json_review = os.environ.get('URL_GIT_JSON_REVIEW')
-macd_git_json = os.environ.get('MACD_GIT_JSON')
 
 token_git_json = os.environ.get('TOKEN_GIT_JSON')
 content_git_json = os.environ.get('CONTENT_GIT_JSON')
@@ -527,17 +526,6 @@ def fire():
     print(macd_w_is_fall)
     print("\nKalman Filter zero-crossing check (calculated)")
     print(kf_signals)
-
-    if not macd_w_is_fall:
-      try:
-        r = session.get(macd_git_json, headers=headers, timeout=5)
-        if r.status_code == 200:
-          r.encoding = 'utf-8'
-          macd_w_is_fall = r.json()
-          print("\nMACD Hist (W) fall check (fallback to git json)")
-          print(macd_w_is_fall)
-      except Exception:
-        pass
 
     _macd_w_is_fall = dict(macd_w_is_fall)
     _kf_signals = dict(kf_signals)
