@@ -8,6 +8,7 @@ import sys
 import time
 import traceback
 from datetime import date, datetime, timedelta
+from urllib.parse import quote
 from zoneinfo import ZoneInfo
 
 
@@ -326,7 +327,9 @@ def ma_calculation(ticker, session, use_adj=True, return_macd=False, return_indi
 
 ################################################################################################################################################################
 def get_fitx_histock(session):
+  # Replaced by WTX& (台指期) via tw.stock Yahoo StockServices.stockList, see tickers_url quote()
 
+  """
   r = session.get('https://histock.tw/stock/module/function.aspx?m=stocktop2017&no=FITX')
   
   quote = '台指期 []'
@@ -348,6 +351,7 @@ def get_fitx_histock(session):
 
   print(quote)
   return quote
+  """
 
 
 
@@ -508,6 +512,11 @@ def fire():
     macd_w_is_fall = {}
     kf_signals = {}
     for p in portfolio:
+      if '&' in p[IDX_T]:          # Futures (e.g. WTX&) have no query1 daily history
+        if reset_portfolio == True:
+          p.extend([None]*9)
+        print(f'{p[IDX_T]}: skip MA calculation (futures)', file=sys.stdout)
+        continue
       ma, is_fall, kf_sig = ma_calculation(p, session, return_indicators=True)
       #ma = ema_calculation(p, session)
       macd_w_is_fall[p[IDX_T]] = is_fall
@@ -530,7 +539,7 @@ def fire():
     _macd_w_is_fall = dict(macd_w_is_fall)
     _kf_signals = dict(kf_signals)
 
-    msg_toast.append(get_fitx_histock(session))
+    #msg_toast.append(get_fitx_histock(session))     # Replaced by WTX& (台指期) in tw.stock Yahoo portfolio
 
 
   #--------------------------------------------------------------------------------
@@ -545,7 +554,8 @@ def fire():
     # Only can query 3 tickers at a time.
     chunk = portfolio[c:c + chunk_len]
     tickers = [p[IDX_T] for p in chunk]
-    tickers_url = ','.join(tickers)
+    # Encode each ticker (& -> %26 for e.g. WTX&, ^ -> %5E); ',' separator stays raw
+    tickers_url = ','.join(quote(t, safe='') for t in tickers)
 
     url = 'https://tw.stock.yahoo.com/_td-stock/api/resource/StockServices.stockList;symbols=' + tickers_url
     r = session.get(url, headers=headers, timeout=5)
@@ -652,7 +662,7 @@ def fire():
 
           if s in [
               "^TWII", "^TWOII", "^GSPC", "^RUT", "^N225", "^KS11", "VOO",
-              "QQQ", "000300.SS"
+              "QQQ", "000300.SS", "WTX&"
           ]:
             delta_u = DELTA_I_U
             delta_d = DELTA_I_D
@@ -781,7 +791,7 @@ def fire():
               ticker = portfolio[port_idx][IDX_T]
               url_chart = ''
               ts = int(time.time())
-              if '^' in ticker or '-' in ticker or '=' in ticker or '.S' in ticker or '.HK' in ticker:  # Skip index
+              if '^' in ticker or '-' in ticker or '=' in ticker or '.S' in ticker or '.HK' in ticker or '&' in ticker:  # Skip index/futures
                 pass
               elif '.TW' in ticker:  # TW
                 t = ticker[:ticker.index('.')]
