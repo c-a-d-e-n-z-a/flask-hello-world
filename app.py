@@ -4,6 +4,7 @@ import html
 import json
 import os
 import pickle
+import re
 import sys
 import time
 import traceback
@@ -84,7 +85,23 @@ DELTA_I_A = 0.00382  # delta abs for index
 user_agent = 'Mozilla/5.0 (Macintosh; Intel Mac OS X 10_10_1) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/133.0.0.0 Safari/537.36'
 headers = {"User-Agent": user_agent}
 
-YAHOO_CRUMB = "dx7e5yMCafJ"
+YAHOO_CRUMB = "dx7e5yMCafJ"  # stale fallback; fetch_yahoo_crumb() refreshes this at session creation
+
+_yahoo_crumb = None  # dynamically fetched crumb, shared by all Yahoo chart requests
+
+def fetch_yahoo_crumb(session, try_count=3):
+  """Fetch a fresh Yahoo crumb (crumbs are session-scoped and rotate).
+  Warms up the cookie session then reads the crumb embedded in the page HTML."""
+  for _ in range(try_count):
+    try:
+      r = session.get("https://fc.yahoo.com", headers=headers, timeout=5, verify=False)
+      r2 = session.get("https://finance.yahoo.com", headers=headers, timeout=5, verify=False)
+      m = re.search(r'"crumb":"([^"]+)"', r2.text)
+      if m:
+        return m.group(1)
+    except Exception as e:
+      print(f"Error fetching Yahoo crumb: {e}", file=sys.stdout)
+  return None
 
 #--------------------------------------------------------------------------------
 p_u = '\U0001F534'  # price mark 🔴
@@ -237,7 +254,7 @@ def ma_calculation(ticker, session, use_adj=True, return_macd=False, return_indi
       datetime.combine(endDate,
                        datetime.now().time()).timestamp())
 
-  crumb = YAHOO_CRUMB
+  crumb = _yahoo_crumb if _yahoo_crumb else YAHOO_CRUMB
   url_history = f"https://query1.finance.yahoo.com/v8/finance/chart/{ticker[0]}?period1={startDate_epoch}&period2={endDate_epoch}&interval=1d&events=history&includeAdjustedClose=true&events=div%2Csplits&crumb={crumb}"
   #print('  url=' + url_history)
 
@@ -280,6 +297,13 @@ def ma_calculation(ticker, session, use_adj=True, return_macd=False, return_indi
         if return_indicators:
           return (res, 0, None)
         return (res, 0) if return_macd else res
+
+    # Guard: no None values but empty/all-invalid data
+    if len(close) == 0:
+      res = [None, None, None, None, None, None, None, None, None, None]
+      if return_indicators:
+        return (res, 0, None)
+      return (res, 0) if return_macd else res
 
     n = len(close)
     precision = 4 if close[-1] < 1 else 2
@@ -453,8 +477,8 @@ def fire():
     leisure_time = False
     portfolio_reload = 120 // query_interval  # 2H
 
-  # Reset portolio to trigee full report, like @13:33 and @21:27 (TW stock close, and before US open), and always reset @7:30
-  if (day < 5 and ((mins == timestamp[2] + query_interval) or (mins == timestamp[3] - query_interval))) or (mins == 450):
+  # Reset portolio to trigee full report, like @13:33 and @21:27 (TW stock close, and before US open), and always reset @sleep end (7:30 = timestamp[1])
+  if (day < 5 and ((mins == timestamp[2] + query_interval) or (mins == timestamp[3] - query_interval))) or (mins == timestamp[1]):
     portfolio_cnt = 0
     portfolio.clear()
     print("\nReset portfolio - 1")
@@ -470,41 +494,49 @@ def fire():
   print(msg_toast[0])
 
   
-  #--------------------------------------------------------------------------------
-  session = requests.Session(impersonate="chrome")
+  # Refresh Yahoo crumb every full reload (crumbs are session-scoped and expire)
+  global _fire_timestamp, _macd_w_is_fall, _kf_signals, _yahoo_crumb
+  if portfolio_cnt == 0:
+    _yahoo_crumb = fetch_yahoo_crumb(session)
+    if _yahoo_crumb:
+      print(f'Fetched Yahoo crumb: {_yahoo_crumb}')
+    else:
+      print(f'Failed to fetch Yahoo crumb, falling back to hardcoded one', file=sys.stdout)
 
   # Reload portfolio every 60 runs
   if portfolio_cnt == 0:
 
+    reset_portfolio = False  # default when GitHub JSON fetch fails (avoids UnboundLocalError below)
     r = session.get(url_git_json, headers=headers, timeout=5)
     if r.status_code == 200:
       r.encoding = 'utf-8'
       json_git = r.json()
 
-      timestamp = json_git["timestamp"]
+      # .get() with default to survive older-format portfolio.json
+      timestamp = json_git.get("timestamp", [30, 450, 810, 1290])
       _fire_timestamp = timestamp
       print(f'\nLoad timestamp: {timestamp}')
 
-      reset_portfolio = False
-
-      if len(portfolio) != len(json_git["portfolio"]):
-        print(f'[POR] LEN: {len(portfolio)} != {len(json_git["portfolio"])}')
+      remote_portfolio = json_git["portfolio"]
+      if len(portfolio) != len(remote_portfolio):
+        print(f'[POR] LEN: {len(portfolio)} != {len(remote_portfolio)}')
         reset_portfolio = True
 
-      for i in range(len(portfolio)):
-        for j in range(3):
-          if portfolio[i][j] != json_git["portfolio"][i][j]:
-            print(f'[POR] ELM: {portfolio[i][j]} != {json_git["portfolio"][i][j]}')
-            reset_portfolio = True
+      # bounds-checked element-by-element comparison (covers shorter lists)
+      if not reset_portfolio:
+        for i in range(len(portfolio)):
+          for j in range(3):
+            if portfolio[i][j] != remote_portfolio[i][j]:
+              print(f'[POR] ELM: {portfolio[i][j]} != {remote_portfolio[i][j]}')
+              reset_portfolio = True
+              break
+          if reset_portfolio:
             break
-        else:  # only execute when it's no break in the inner loop
-          continue
-        break
 
       if reset_portfolio == True:
         portfolio.clear()
         print("\nReset portfolio - 2")
-        portfolio = json_git["portfolio"]
+        portfolio = remote_portfolio
         print('--------------------------------------------------------------------------------')
         print(portfolio)
         print('--------------------------------------------------------------------------------')
@@ -705,105 +737,102 @@ def fire():
           portfolio[port_idx][IDX_P] = price  # To append curent price (new list item)
 
         if msg != '':
-          msg_updated = True  # Remove stored msg to save the heap size
-
-          if msg_updated == True:
             # Check if SMA cross (today vs. yesterday)
-            ma10 = portfolio[port_idx][IDX_10MA]
-            ma20 = portfolio[port_idx][IDX_20MA]
-            ma60 = portfolio[port_idx][IDX_60MA]
-            ma200 = portfolio[port_idx][IDX_200MA]
-            ma10_1 = portfolio[port_idx][IDX_10MA_1]
-            ma20_1 = portfolio[port_idx][IDX_20MA_1]
-            ma60_1 = portfolio[port_idx][IDX_60MA_1]
-            ma200_1 = portfolio[port_idx][IDX_200MA_1]
+          ma10 = portfolio[port_idx][IDX_10MA]
+          ma20 = portfolio[port_idx][IDX_20MA]
+          ma60 = portfolio[port_idx][IDX_60MA]
+          ma200 = portfolio[port_idx][IDX_200MA]
+          ma10_1 = portfolio[port_idx][IDX_10MA_1]
+          ma20_1 = portfolio[port_idx][IDX_20MA_1]
+          ma60_1 = portfolio[port_idx][IDX_60MA_1]
+          ma200_1 = portfolio[port_idx][IDX_200MA_1]
 
-            price_low = portfolio[port_idx][IDX_F]
-            price_high = portfolio[port_idx][IDX_C]
+          price_low = portfolio[port_idx][IDX_F]
+          price_high = portfolio[port_idx][IDX_C]
 
-            # Floor/Ceilng cross
-            if price_low is not None:
-              if (price > price_low) and (price_1 <= price_low):
-                msg += f' {l_c_u}<b>L={price_low:.{precision}f}</b>'
-              if (price < price_low) and (price_1 >= price_low):
-                msg += f' {l_c_d}<b>L={price_low:.{precision}f}</b>'
-            if price_high is not None:
-              if (price > price_high) and (price_1 <= price_high):
-                msg += f' {l_c_u}<b>H={price_high:.{precision}f}</b>'
-              if (price < price_high) and (price_1 >= price_high):
-                msg += f' {l_c_d}<b>H={price_high:.{precision}f}</b>'
+          # Floor/Ceilng cross
+          if price_low is not None:
+            if (price > price_low) and (price_1 <= price_low):
+              msg += f' {l_c_u}<b>L={price_low:.{precision}f}</b>'
+            if (price < price_low) and (price_1 >= price_low):
+              msg += f' {l_c_d}<b>L={price_low:.{precision}f}</b>'
+          if price_high is not None:
+            if (price > price_high) and (price_1 <= price_high):
+              msg += f' {l_c_u}<b>H={price_high:.{precision}f}</b>'
+            if (price < price_high) and (price_1 >= price_high):
+              msg += f' {l_c_d}<b>H={price_high:.{precision}f}</b>'
 
-            # SMA trend
-            if ma10_1 is not None:
-              if (price > ma10) and (price_1 <= ma10_1):
-                msg += f' {l_c_u}<b>MA10={ma10:.{precision}f}</b>'
-              if (price < ma10) and (price_1 >= ma10_1):
-                msg += f' {l_c_d}<b>MA10={ma10:.{precision}f}</b>'
+          # SMA trend
+          if ma10_1 is not None:
+            if (price > ma10) and (price_1 <= ma10_1):
+              msg += f' {l_c_u}<b>MA10={ma10:.{precision}f}</b>'
+            if (price < ma10) and (price_1 >= ma10_1):
+              msg += f' {l_c_d}<b>MA10={ma10:.{precision}f}</b>'
 
-                if portfolio[port_idx][IDX_T] in macd_w_is_fall:
-                  if macd_w_is_fall[portfolio[port_idx][IDX_T]] == True:  # SMA10 cross and weekly MACD is fall
-                    msg += ' <b>[MACD Fall]</b>'
+              if portfolio[port_idx][IDX_T] in macd_w_is_fall:
+                if macd_w_is_fall[portfolio[port_idx][IDX_T]] == True:  # SMA10 cross and weekly MACD is fall
+                  msg += ' <b>[MACD Fall]</b>'
 
-            if ma20_1 is not None:
-              if (price > ma20) and (price_1 <= ma20_1):
-                msg += f' {l_c_u}<b>MA20={ma20:.{precision}f}</b>'
-              if (price < ma20) and (price_1 >= ma20_1):
-                msg += f' {l_c_d}<b>MA20={ma20:.{precision}f}</b>'
-                if ma10 > ma20:
-                  msg += ' <b>[JUMP Fall]</b>'
+          if ma20_1 is not None:
+            if (price > ma20) and (price_1 <= ma20_1):
+              msg += f' {l_c_u}<b>MA20={ma20:.{precision}f}</b>'
+            if (price < ma20) and (price_1 >= ma20_1):
+              msg += f' {l_c_d}<b>MA20={ma20:.{precision}f}</b>'
+              if ma10 > ma20:
+                msg += ' <b>[JUMP Fall]</b>'
 
-            if ma60_1 is not None:
-              if (price > ma60) and (price_1 <= ma60_1):
-                msg += f' {l_c_u}<b>MA60={ma60:.{precision}f}</b>'
-              if (price < ma60) and (price_1 >= ma60_1):
-                msg += f' {l_c_d}<b>MA60={ma60:.{precision}f}</b>'
+          if ma60_1 is not None:
+            if (price > ma60) and (price_1 <= ma60_1):
+              msg += f' {l_c_u}<b>MA60={ma60:.{precision}f}</b>'
+            if (price < ma60) and (price_1 >= ma60_1):
+              msg += f' {l_c_d}<b>MA60={ma60:.{precision}f}</b>'
 
-            if ma200_1 is not None:
-              if (price > ma200) and (price_1 <= ma200_1):
-                msg += f' {l_c_u}<b>MA200={ma200:.{precision}f}</b>'
-              if (price < ma200) and (price_1 >= ma200_1):
-                msg += f' {l_c_d}<b>MA200={ma200:.{precision}f}</b>'
+          if ma200_1 is not None:
+            if (price > ma200) and (price_1 <= ma200_1):
+              msg += f' {l_c_u}<b>MA200={ma200:.{precision}f}</b>'
+            if (price < ma200) and (price_1 >= ma200_1):
+              msg += f' {l_c_d}<b>MA200={ma200:.{precision}f}</b>'
 
-            # SMA cross
-            if (ma60_1 is not None) and (ma10_1 is not None):
-              if (ma10 > ma60) and (ma10_1 <= ma60_1):
-                msg += f' {l_c_u}<b>MA1060={ma10:.{precision}f},{ma60:.{precision}f}</b>'
-              if (ma10 < ma60) and (ma10_1 >= ma60_1):
-                msg += f' {l_c_d}<b>MA1060={ma10:.{precision}f},{ma60:.{precision}f}</b>'
-            if (ma20_1 is not None) and (ma10_1 is not None):
-              if (ma10 > ma20) and (ma10_1 <= ma20_1):
-                msg += f' {l_c_u}<b>MA1020={ma10:.{precision}f},{ma20:.{precision}f}</b>'
-              if (ma10 < ma20) and (ma10_1 >= ma20_1):
-                msg += f' {l_c_d}<b>MA1020={ma10:.{precision}f},{ma20:.{precision}f}</b>'
-            if (ma60_1 is not None) and (ma20_1 is not None):
-              if (ma20 > ma60) and (ma20_1 <= ma60_1):
-                msg += f' {l_c_u}<b>MA2060={ma20:.{precision}f},{ma60:.{precision}f}</b>'
-              if (ma20 < ma60) and (ma20_1 >= ma60_1):
-                msg += f' {l_c_d}<b>MA2060={ma20:.{precision}f},{ma60:.{precision}f}</b>'
+          # SMA cross
+          if (ma60_1 is not None) and (ma10_1 is not None):
+            if (ma10 > ma60) and (ma10_1 <= ma60_1):
+              msg += f' {l_c_u}<b>MA1060={ma10:.{precision}f},{ma60:.{precision}f}</b>'
+            if (ma10 < ma60) and (ma10_1 >= ma60_1):
+              msg += f' {l_c_d}<b>MA1060={ma10:.{precision}f},{ma60:.{precision}f}</b>'
+          if (ma20_1 is not None) and (ma10_1 is not None):
+            if (ma10 > ma20) and (ma10_1 <= ma20_1):
+              msg += f' {l_c_u}<b>MA1020={ma10:.{precision}f},{ma20:.{precision}f}</b>'
+            if (ma10 < ma20) and (ma10_1 >= ma20_1):
+              msg += f' {l_c_d}<b>MA1020={ma10:.{precision}f},{ma20:.{precision}f}</b>'
+          if (ma60_1 is not None) and (ma20_1 is not None):
+            if (ma20 > ma60) and (ma20_1 <= ma60_1):
+              msg += f' {l_c_u}<b>MA2060={ma20:.{precision}f},{ma60:.{precision}f}</b>'
+            if (ma20 < ma60) and (ma20_1 >= ma60_1):
+              msg += f' {l_c_d}<b>MA2060={ma20:.{precision}f},{ma60:.{precision}f}</b>'
 
-            # Kalman Filter Zero-crossing
-            ticker_kf = portfolio[port_idx][IDX_T]
-            if ticker_kf in kf_signals and kf_signals[ticker_kf]:
-              msg += f' <b>{kf_signals[ticker_kf]}</b>'
+          # Kalman Filter Zero-crossing
+          ticker_kf = portfolio[port_idx][IDX_T]
+          if ticker_kf in kf_signals and kf_signals[ticker_kf]:
+            msg += f' <b>{kf_signals[ticker_kf]}</b>'
 
-            # Add chart
-            if (l_c_u in msg) or (l_c_d in msg):
-              ticker = portfolio[port_idx][IDX_T]
-              url_chart = ''
-              ts = int(time.time())
-              if '^' in ticker or '-' in ticker or '=' in ticker or '.S' in ticker or '.HK' in ticker or '&' in ticker:  # Skip index/futures
-                pass
-              elif '.TW' in ticker:  # TW
-                t = ticker[:ticker.index('.')]
-                url_chart = f'https://stock.wearn.com/finance_chart.asp?stockid={t}&timeblock=365&sma1=10&sma2=20&sma3=60&volume=1&_t={ts}'
-              else:  # US
-                t = ticker
-                url_chart = f'https://charts2.finviz.com/chart.ashx?t={t}&ta=1&ty=c&p=d&s=l&_t={ts}'  # technical chart
+          # Add chart
+          if (l_c_u in msg) or (l_c_d in msg):
+            ticker = portfolio[port_idx][IDX_T]
+            url_chart = ''
+            ts = int(time.time())
+            if '^' in ticker or '-' in ticker or '=' in ticker or '.S' in ticker or '.HK' in ticker or '&' in ticker:  # Skip index/futures
+              pass
+            elif '.TW' in ticker:  # TW
+              t = ticker[:ticker.index('.')]
+              url_chart = f'https://stock.wearn.com/finance_chart.asp?stockid={t}&timeblock=365&sma1=10&sma2=20&sma3=60&volume=1&_t={ts}'
+            else:  # US
+              t = ticker
+              url_chart = f'https://charts2.finviz.com/chart.ashx?t={t}&ta=1&ty=c&p=d&s=l&_t={ts}'  # technical chart
 
-              if url_chart != '':
-                msg += f'\n{url_chart}\n'
+            if url_chart != '':
+              msg += f'\n{url_chart}\n'
 
-            msg_toast.append(msg)
+          msg_toast.append(msg)
 
     else:
       print(f"\nRead error: {r.status_code}")
@@ -851,7 +880,10 @@ def fire():
 
 
 ################################################################################################################################################################
-def get_stock_data(ticker, start_date, end_date, session, crumb=YAHOO_CRUMB):
+def get_stock_data(ticker, start_date, end_date, session, crumb=None):
+
+  # Use dynamically fetched crumb if available; fall back to hardcoded
+  crumb = _yahoo_crumb if _yahoo_crumb else YAHOO_CRUMB
 
   start_epoch = int(datetime.combine(start_date, datetime.min.time()).timestamp())
   end_epoch = int(datetime.combine(end_date, datetime.min.time()).timestamp())
@@ -909,8 +941,8 @@ def compute_beta(df1, df2):
   t = df2['Adj Close'].pct_change().dropna()
   min_len = min(len(m), len(t))
   m, t = m[-min_len:], t[-min_len:]
-  cov = np.cov(m, t)[0][1]
-  var = np.var(m)
+  cov = np.cov(m, t, ddof=1)[0][1]
+  var = np.var(m, ddof=1)
   return cov / var if var != 0 else np.nan
 
 
@@ -1096,26 +1128,35 @@ def get_option_chain(ticker, expiration):
 
 
 ################################################################################################################################################################
+def compute_pain_table(calls, puts):
+    """Compute per-strike total option-seller loss for every expiry strike at once.
+    Shared by calculate_max_pain and build_chart_option so the loss table is computed only once."""
+    strikes = sorted(set(calls['strike']).union(set(puts['strike'])))
+    call_strikes = calls['strike'].to_numpy()
+    call_oi = calls['openInterest'].to_numpy()
+    put_strikes = puts['strike'].to_numpy()
+    put_oi = puts['openInterest'].to_numpy()
+
+    call_losses = []
+    put_losses = []
+    for expiry_price in strikes:
+        # Call seller loss: ITM strikes below expiry price
+        call_mask = call_strikes < expiry_price
+        call_loss = float(((expiry_price - call_strikes[call_mask]) * call_oi[call_mask]).sum())
+        # Put seller loss: ITM strikes above expiry price
+        put_mask = put_strikes > expiry_price
+        put_loss = float(((put_strikes[put_mask] - expiry_price) * put_oi[put_mask]).sum())
+        call_losses.append(call_loss)
+        put_losses.append(put_loss)
+
+    return strikes, call_losses, put_losses
+
+
 def calculate_max_pain(calls, puts):
-    all_strikes = sorted(set(calls['strike']).union(set(puts['strike'])))
-    pain = {}
-
-    for strike in all_strikes:
-        total_loss = 0
-        for _, row in calls.iterrows():
-            if row['strike'] < strike:
-                loss = row['openInterest'] * (strike - row['strike'])
-                total_loss += loss
-        for _, row in puts.iterrows():
-            if row['strike'] > strike:
-                loss = row['openInterest'] * (row['strike'] - strike)
-                total_loss += loss
-        pain[strike] = total_loss
-
-    del all_strikes
-    gc.collect()
-
-    return min(pain, key=pain.get)
+    strikes, call_losses, put_losses = compute_pain_table(calls, puts)
+    total_losses = [c + p for c, p in zip(call_losses, put_losses)]
+    pain = dict(zip(strikes, total_losses))
+    return min(pain, key=pain.get) if pain else None
 
 
 
@@ -1130,17 +1171,8 @@ def build_chart_option(calls, puts, ticker, max_pain, underlying_price):
     strikes = sorted(set(df_calls['strike']).union(set(df_puts['strike'])))
     strike_labels = [str(s) for s in strikes]
 
-    call_losses = []
-    put_losses = []
-    for expiry_price in strikes:
-        # 看漲選擇權損失：價內 (strike < expiry_price)
-        call_loss = df_calls[df_calls['strike'] < expiry_price].apply(
-            lambda r: (expiry_price - r['strike']) * r['openInterest'], axis=1).sum()
-        # 看跌選擇權損失：價內 (strike > expiry_price)
-        put_loss = df_puts[df_puts['strike'] > expiry_price].apply(
-            lambda r: (r['strike'] - expiry_price) * r['openInterest'], axis=1).sum()
-        call_losses.append(float(call_loss))
-        put_losses.append(float(put_loss))
+    # Reuse the shared loss table (same computation calculate_max_pain just did)
+    _, call_losses, put_losses = compute_pain_table(df_calls, df_puts)
 
     """
     mark_line = {
@@ -1644,6 +1676,12 @@ JSON_EDITOR_HTML = """<!DOCTYPE html>
         input.type = input.type === 'password' ? 'text' : 'password';
     }
 
+    // HTML-escape values interpolated into innerHTML (input values, cell text)
+    function esc(s) {
+        return String(s).replace(/&/g, '&amp;').replace(/</g, '&lt;')
+                         .replace(/>/g, '&gt;').replace(/"/g, '&quot;').replace(/'/g, '&#39;');
+    }
+
     function showToast(msg, isSuccess = true) {
         const t = document.getElementById('toast');
         t.innerText = msg;
@@ -1730,9 +1768,9 @@ JSON_EDITOR_HTML = """<!DOCTYPE html>
             const tr = document.createElement('tr');
             tr.innerHTML = `
                 <td style="color: var(--text-muted); font-weight: 600;">${i + 1}</td>
-                <td><input type="text" value="${row[0] || ''}" onchange="dataP1.portfolio[${i}][0] = this.value"></td>
-                <td><input type="number" step="any" value="${row[1] ?? ''}" onchange="dataP1.portfolio[${i}][1] = parseFloat(this.value) || 0"></td>
-                <td><input type="number" step="any" value="${row[2] ?? ''}" onchange="dataP1.portfolio[${i}][2] = parseFloat(this.value) || 0"></td>
+                <td><input type="text" value="${esc(row[0] || '')}" onchange="dataP1.portfolio[${i}][0] = this.value"></td>
+                <td><input type="number" step="any" value="${esc(row[1] ?? '')}" onchange="dataP1.portfolio[${i}][1] = parseFloat(this.value) || 0"></td>
+                <td><input type="number" step="any" value="${esc(row[2] ?? '')}" onchange="dataP1.portfolio[${i}][2] = parseFloat(this.value) || 0"></td>
                 <td class="actions-cell">
                     <button class="btn btn-secondary btn-sm" onclick="moveP1(${i}, -1)">⬆️</button>
                     <button class="btn btn-secondary btn-sm" onclick="moveP1(${i}, 1)">⬇️</button>
@@ -1775,7 +1813,7 @@ JSON_EDITOR_HTML = """<!DOCTYPE html>
             const tag = document.createElement('div');
             tag.className = 'author-tag';
             tag.innerHTML = `
-                <input type="text" value="${name || ''}" onchange="dataP1.author[${i}] = this.value">
+                <input type="text" value="${esc(name || '')}" onchange="dataP1.author[${i}] = this.value">
                 <button class="btn btn-danger" onclick="delAuthor(${i})">✕</button>
             `;
             container.appendChild(tag);
@@ -1806,10 +1844,10 @@ JSON_EDITOR_HTML = """<!DOCTYPE html>
             const tr = document.createElement('tr');
             tr.innerHTML = `
                 <td style="color: var(--text-muted); font-weight: 600;">${i + 1}</td>
-                <td><input type="text" value="${item.ticker || ''}" onchange="dataP2.stock[${i}].ticker = this.value"></td>
-                <td><input type="text" value="${item.description || ''}" onchange="dataP2.stock[${i}].description = this.value"></td>
-                <td><input type="number" step="any" value="${item.priceFloor ?? ''}" onchange="dataP2.stock[${i}].priceFloor = parseFloat(this.value) || 0"></td>
-                <td><input type="number" step="any" value="${item.priceCeiling ?? ''}" onchange="dataP2.stock[${i}].priceCeiling = parseFloat(this.value) || 0"></td>
+                <td><input type="text" value="${esc(item.ticker || '')}" onchange="dataP2.stock[${i}].ticker = this.value"></td>
+                <td><input type="text" value="${esc(item.description || '')}" onchange="dataP2.stock[${i}].description = this.value"></td>
+                <td><input type="number" step="any" value="${esc(item.priceFloor ?? '')}" onchange="dataP2.stock[${i}].priceFloor = parseFloat(this.value) || 0"></td>
+                <td><input type="number" step="any" value="${esc(item.priceCeiling ?? '')}" onchange="dataP2.stock[${i}].priceCeiling = parseFloat(this.value) || 0"></td>
                 <td class="actions-cell">
                     <button class="btn btn-secondary btn-sm" onclick="moveP2Stock(${i}, -1)">⬆️</button>
                     <button class="btn btn-secondary btn-sm" onclick="moveP2Stock(${i}, 1)">⬇️</button>
@@ -1826,11 +1864,11 @@ JSON_EDITOR_HTML = """<!DOCTYPE html>
             const tr = document.createElement('tr');
             tr.innerHTML = `
                 <td style="color: var(--text-muted); font-weight: 600;">${i + 1}</td>
-                <td><input type="text" value="${item.ticker || ''}" onchange="dataP2.currency[${i}].ticker = this.value"></td>
-                <td><input type="text" value="${item.description || ''}" onchange="dataP2.currency[${i}].description = this.value"></td>
-                <td><input type="number" step="any" value="${item.priceFloor ?? ''}" onchange="dataP2.currency[${i}].priceFloor = parseFloat(this.value) || 0"></td>
-                <td><input type="number" step="any" value="${item.priceCeiling ?? ''}" onchange="dataP2.currency[${i}].priceCeiling = parseFloat(this.value) || 0"></td>
-                <td><input type="text" value="${item.source || ''}" onchange="dataP2.currency[${i}].source = this.value"></td>
+                <td><input type="text" value="${esc(item.ticker || '')}" onchange="dataP2.currency[${i}].ticker = this.value"></td>
+                <td><input type="text" value="${esc(item.description || '')}" onchange="dataP2.currency[${i}].description = this.value"></td>
+                <td><input type="number" step="any" value="${esc(item.priceFloor ?? '')}" onchange="dataP2.currency[${i}].priceFloor = parseFloat(this.value) || 0"></td>
+                <td><input type="number" step="any" value="${esc(item.priceCeiling ?? '')}" onchange="dataP2.currency[${i}].priceCeiling = parseFloat(this.value) || 0"></td>
+                <td><input type="text" value="${esc(item.source || '')}" onchange="dataP2.currency[${i}].source = this.value"></td>
                 <td class="actions-cell">
                     <button class="btn btn-danger" onclick="delP2Currency(${i})">🗑️</button>
                 </td>
@@ -1985,8 +2023,8 @@ JSON_EDITOR_HTML = """<!DOCTYPE html>
             tr.innerHTML = `
                 <td style="color: var(--text-muted); font-weight: 600;">${i + 1}</td>
                 <td>${badgeHtml}</td>
-                <td style="font-weight: 700; color: #fff;">${item.ticker}</td>
-                <td style="color: var(--text-muted);">${item.desc || '-'}</td>
+                <td style="font-weight: 700; color: #fff;">${esc(item.ticker)}</td>
+                <td style="color: var(--text-muted);">${esc(item.desc || '-')}</td>
                 <td><code>$${item.mainFloor} / $${item.mainCeiling}</code></td>
                 <td><code>$${item.reviewFloor} / $${item.reviewCeiling}</code></td>
                 <td style="${item.isDiff ? 'color: var(--accent-amber); font-weight: 600;' : 'color: var(--text-muted);'}">${item.resultText}</td>
