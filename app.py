@@ -493,6 +493,8 @@ def fire():
   msg_toast.append(timestamp_msg + f' ({day+1}) - {run_env} (cnt={portfolio_cnt})')
   print(msg_toast[0])
 
+  #--------------------------------------------------------------------------------
+  session = requests.Session(impersonate="chrome")
   
   # Refresh Yahoo crumb every full reload (crumbs are session-scoped and expire)
   if portfolio_cnt == 0:
