@@ -402,7 +402,7 @@ def index():
 @app.route('/fire/')
 def fire():
 
-  global _fire_timestamp, _macd_w_is_fall, _kf_signals
+  global _fire_timestamp, _macd_w_is_fall, _kf_signals, _yahoo_crumb
 
   gc.collect()
 
@@ -495,7 +495,6 @@ def fire():
 
   
   # Refresh Yahoo crumb every full reload (crumbs are session-scoped and expire)
-  global _fire_timestamp, _macd_w_is_fall, _kf_signals, _yahoo_crumb
   if portfolio_cnt == 0:
     _yahoo_crumb = fetch_yahoo_crumb(session)
     if _yahoo_crumb:
