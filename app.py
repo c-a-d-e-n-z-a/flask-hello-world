@@ -694,7 +694,7 @@ def fire():
             delta_a = DELTA_A
 
           if s in [
-              "^TWII", "^TWOII", "^GSPC", "^RUT", "^N225", "^KS11", "VOO",
+              "^TWII", "^TWOII", "^GSPC", "^RUT", "^N225", "^KS11", "VOO", "ES=F", "NQ=F",
               "QQQ", "000300.SS", "WTX&"
           ]:
             delta_u = DELTA_I_U
