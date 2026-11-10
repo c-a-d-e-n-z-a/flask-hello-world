@@ -506,6 +506,23 @@ def get_taiex_sentiment(session=None):
     }
 
     chg_icon = "🔴 ▲" if chg > 0 else ("🟢 ▼" if chg < 0 else "⚪")
+    tg_lines = [
+      f"🏛️ <b>【大盤即時情緒與市場寬度】</b>",
+      f"• <b>加權指數</b>: <code>{p:,.2f}</code> {chg_icon} <b>{chg:+,.2f} ({chg_pct:+.2f}%)</b>",
+      f"• <b>情緒指數</b>: <b>{sentiment_score}</b> | <b>{regime}</b>",
+      f"• <b>市場寬度</b>: 🔴 漲 <b>{up_cnt}</b> / 🟢 跌 <b>{down_cnt}</b> (騰落比: <code>{ad_ratio:.2f}</code>)",
+      f"• <b>漲跌停數</b>: 漲停 <b>{upl_cnt}</b> | 跌停 <b>{downl_cnt}</b>",
+      f"• <b>主力大單</b>: 均買 <code>{avg_bid:.2f}張</code> vs 均賣 <code>{avg_ask:.2f}張</code> (主力比: <code>{large_order_ratio:.2f}</code>)",
+    ]
+    if divergence_flags:
+      for a in divergence_flags:
+        tg_lines.append(f"• <b>警報提示</b>: <b>{a}</b>")
+    if action:
+      tg_lines.append(f"• <b>策略指引</b>: {action}")
+    telegram_msg = "\n".join(tg_lines)
+
+    result['telegram_msg'] = telegram_msg
+
     print(f"\n[TAIEX Sentiment] {result['symbol']}: {result['price']:,.2f} {chg_icon} ({result['change']:+.2f}, {result['change_pct']:+.2f}%)")
     print(f"  Score: {result['sentiment_score']} | {result['regime']}")
     print(f"  Breadth: 🔴 漲 {up_cnt} / 🟢 跌 {down_cnt} (AD: {result['breadth']['ad_ratio']}) | 漲停: {upl_cnt} / 跌停: {downl_cnt}")
@@ -719,6 +736,8 @@ def fire():
     taiex_sentiment = get_taiex_sentiment(session)
     if taiex_sentiment:
       _taiex_sentiment = taiex_sentiment
+      if taiex_sentiment.get('telegram_msg'):
+        msg_toast.append(taiex_sentiment['telegram_msg'])
 
     #msg_toast.append(get_fitx_histock(session))     # Replaced by WTX& (台指期) in tw.stock Yahoo portfolio
 
