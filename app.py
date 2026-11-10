@@ -11,6 +11,7 @@ import traceback
 from datetime import date, datetime, timedelta
 from urllib.parse import quote
 from zoneinfo import ZoneInfo
+import xml.etree.ElementTree as ET
 
 
 #import requests
@@ -43,6 +44,7 @@ url_git_json_review = os.environ.get('URL_GIT_JSON_REVIEW')
 token_git_json = os.environ.get('TOKEN_GIT_JSON')
 content_git_json = os.environ.get('CONTENT_GIT_JSON')
 content_git_json_review = os.environ.get('CONTENT_GIT_JSON_REVIEW')
+mdj_url = os.environ.get('MDJ_URL')
 
 # API KEY
 gemini_api_key =  os.environ.get('API_KEY')
@@ -380,9 +382,150 @@ def get_fitx_histock(session):
 
 
 
+################################################################################################################################################################
+def get_taiex_sentiment(session=None):
+  """抓取加權指數即時行情、市場寬度、多空能量計與情緒量化模型"""
+  try:
+    url = f"{mdj_url.rstrip('/')}/Z/js/SKV/TSE,1/SKVgetv1.djxml?x=1&a=TSE,1&b=0&c=0&d=0"
+    if session:
+      resp = session.get(url, timeout=5)
+    else:
+      resp = requests.get(url, timeout=5)
+
+    if resp.status_code != 200 or not resp.content:
+      print(f"[TAIEX Sentiment] HTTP error: {resp.status_code}")
+      return None
+
+    root = ET.fromstring(resp.content)
+    data = root.find('Data')
+    if data is None:
+      print("[TAIEX Sentiment] No Data element in XML")
+      return None
+
+    p = float(data.get('P', 0)) / 100.0
+    pc = float(data.get('PC', 0)) / 100.0
+    chg = p - pc
+    chg_pct = (chg / pc) * 100.0 if pc else 0.0
+    h = float(data.get('H', 0)) / 100.0
+    l = float(data.get('L', 0)) / 100.0
+    clv = (p - l) / (h - l) if (h - l) > 0 else 0.5
+
+    up_cnt = int(data.get('UpS', 0))
+    down_cnt = int(data.get('DownS', 0))
+    upl_cnt = int(data.get('UpLS', 0))
+    downl_cnt = int(data.get('DownLS', 0))
+    total_active = up_cnt + down_cnt
+    up_ratio = (up_cnt / total_active * 100.0) if total_active else 50.0
+    ad_ratio = (up_cnt / down_cnt) if down_cnt > 0 else 99.0
+
+    tbs = int(data.get('TBS', 0))
+    tas = int(data.get('TAS', 0))
+    tbc = int(data.get('TBC', 1))
+    tac = int(data.get('TAC', 1))
+
+    ba_ratio = (tbs / tas) if tas > 0 else 1.0
+    avg_bid = tbs / tbc if tbc > 0 else 0.0
+    avg_ask = tas / tac if tac > 0 else 0.0
+    large_order_ratio = (avg_bid / avg_ask) if avg_ask > 0 else 1.0
+
+    divergence_flags = []
+    if chg > 0 and up_cnt < down_cnt:
+      divergence_flags.append("⚠️ 【拉積盤/指跌背離】指數上漲但下跌家數過半，主力拉權值掩護中小型股出貨！")
+    elif chg < 0 and up_cnt > down_cnt:
+      divergence_flags.append("💎 【壓盤洗籌/指漲背離】指數微跌但上漲家數居多，市場體質強韌，主力暗中吃貨！")
+
+    if chg_pct > 1.0 and clv < 0.35:
+      divergence_flags.append("🚨 【高檔引爆獲利賣壓】早盤大漲但尾盤收近當日最低，留長上影線！")
+    elif chg_pct < -1.0 and clv > 0.65:
+      divergence_flags.append("🔴 【低檔強力承接反彈】早盤重挫但尾盤強拉收高，下影線長！")
+
+    score_breadth = min(max(up_ratio, 0.0), 100.0)
+    score_speculation = min(max(50.0 + (upl_cnt - downl_cnt) * 2.0, 0.0), 100.0)
+    score_orderflow = min(max(50.0 + (ba_ratio - 1.0) * 100.0, 0.0), 100.0)
+    score_clv = clv * 100.0
+
+    sentiment_score = round(
+      score_breadth * 0.40 +
+      score_speculation * 0.25 +
+      score_orderflow * 0.20 +
+      score_clv * 0.15,
+      1
+    )
+
+    if sentiment_score >= 80:
+      regime = "🔥 極度樂觀 (Extreme Greed)"
+      action = "全市場普漲追價熱絡，漲停家數激增。慎防拉高主力獲利了結，嚴禁追高破線股！"
+    elif sentiment_score >= 60:
+      regime = "🔴 偏多主導 (Bullish / Risk-On)"
+      action = "多方佔據優勢，市場廣度健康，個股普遍具備延續力，可順勢操作強勢族群。"
+    elif sentiment_score >= 40:
+      regime = "⚪ 中性拉鋸 (Neutral / Diverged)"
+      action = "多空勢均力敵或結構分化，缺乏明確族群共識，建議縮小部位、高出低進。"
+    elif sentiment_score >= 20:
+      regime = "🟢 偏空防守 (Bearish / Risk-Off)"
+      action = "賣壓沉重，下跌家數佔比高，資金傾向防守避險，嚴格控管曝險降低持股。"
+    else:
+      regime = "❄️ 極度恐慌 (Extreme Fear)"
+      action = "市場出現踩踏拋售與流動性恐慌，跌停家數偏高。短線不宜盲目殺低，準備留意超跌黃金買點！"
+
+    result = {
+      'symbol': '加權指數',
+      'price': p,
+      'change': round(chg, 2),
+      'change_pct': round(chg_pct, 2),
+      'turnover_billion': round(float(data.get('TV', 0)) / 10000.0, 2),
+      'sentiment_score': sentiment_score,
+      'regime': regime,
+      'action_guidance': action,
+      'breadth': {
+        'up_count': up_cnt,
+        'down_count': down_cnt,
+        'up_ratio_pct': round(up_ratio, 1),
+        'ad_ratio': round(ad_ratio, 2),
+        'limit_up': upl_cnt,
+        'limit_down': downl_cnt,
+      },
+      'order_flow': {
+        'bid_volume_lots': tbs,
+        'ask_volume_lots': tas,
+        'net_bid_lots': tbs - tas,
+        'bid_ask_ratio': round(ba_ratio, 2),
+        'avg_bid_lot': round(avg_bid, 2),
+        'avg_ask_lot': round(avg_ask, 2),
+        'large_order_ratio': round(large_order_ratio, 2),
+      },
+      'up_count': up_cnt,
+      'limit_up_count': upl_cnt,
+      'down_count': down_cnt,
+      'limit_down_count': downl_cnt,
+      'bid_volume_lots': tbs,
+      'ask_volume_lots': tas,
+      'net_bid_lots': tbs - tas,
+      'divergence_alerts': divergence_flags,
+      'time': f"{data.get('Date')} {data.get('T')[:2]}:{data.get('T')[2:4]}:{data.get('T')[4:]}"
+    }
+
+    chg_icon = "🔴 ▲" if chg > 0 else ("🟢 ▼" if chg < 0 else "⚪")
+    print(f"\n[TAIEX Sentiment] {result['symbol']}: {result['price']:,.2f} {chg_icon} ({result['change']:+.2f}, {result['change_pct']:+.2f}%)")
+    print(f"  Score: {result['sentiment_score']} | {result['regime']}")
+    print(f"  Breadth: 🔴 漲 {up_cnt} / 🟢 跌 {down_cnt} (AD: {result['breadth']['ad_ratio']}) | 漲停: {upl_cnt} / 跌停: {downl_cnt}")
+    print(f"  OrderFlow: Net Bid {result['order_flow']['net_bid_lots']:,} lots (B/A: {result['order_flow']['bid_ask_ratio']}) | Large Order Ratio: {result['order_flow']['large_order_ratio']}")
+    for alert in divergence_flags:
+      print(f"  {alert}")
+
+    return result
+
+  except Exception as e:
+    print(f"[TAIEX Sentiment] Error fetching market breadth: {e}")
+    return None
+
+
+
+
 _fire_timestamp = [30, 450, 810, 1290]  # persists across requests
 _macd_w_is_fall = {}  # persists across requests
 _kf_signals = {}  # persists across requests
+_taiex_sentiment = {}  # persists across requests
 
 ################################################################################################################################################################
 app = Flask(__name__)
@@ -402,7 +545,7 @@ def index():
 @app.route('/fire/')
 def fire():
 
-  global _fire_timestamp, _macd_w_is_fall, _kf_signals, _yahoo_crumb
+  global _fire_timestamp, _macd_w_is_fall, _kf_signals, _yahoo_crumb, _taiex_sentiment
 
   gc.collect()
 
@@ -412,6 +555,7 @@ def fire():
   leisure_time = False
   macd_w_is_fall = dict(_macd_w_is_fall)
   kf_signals = dict(_kf_signals)
+  taiex_sentiment = dict(_taiex_sentiment)
 
   timestamp = _fire_timestamp  # use persisted value; updated when JSON loads
 
@@ -571,6 +715,10 @@ def fire():
 
     _macd_w_is_fall = dict(macd_w_is_fall)
     _kf_signals = dict(kf_signals)
+
+    taiex_sentiment = get_taiex_sentiment(session)
+    if taiex_sentiment:
+      _taiex_sentiment = taiex_sentiment
 
     #msg_toast.append(get_fitx_histock(session))     # Replaced by WTX& (台指期) in tw.stock Yahoo portfolio
 
