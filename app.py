@@ -161,42 +161,40 @@ def calc_macd_hist_r_fall(close):
 
 
 ################################################################################################################################################################
-def calc_kalman_filter_signal(close, r=10.0, q1=0.01, q2=0.01):
+def calc_kalman_filter_signal(close, atr_val=None, r=10.0, q1=0.01, q2=0.01):
   """
-  Calculate Kalman Filter velocity and zero-crossing signal:
+  Calculate scale-invariant log-price Kalman Filter velocity, zero-crossing, and trend exhaustion:
   Matches StockReview report.py stock_check_critical_points_after_resample()
-  Returns:
-    '[KF] 多空轉換 (空轉多)' if v_prev < 0.0 and v_today >= 0.0
-    '[KF] 多空轉換 (多轉空)' if v_prev >= 0.0 and v_today < 0.0
-    None otherwise
   """
-  if not close or len(close) < 3:
+  if not close or len(close) < 4:
     return None
 
   try:
     prices = np.asarray(close, dtype=np.float64)
     n = len(prices)
+    log_scale = 100.0
 
     first_valid_idx = -1
     for idx in range(n):
-      if not np.isnan(prices[idx]):
+      if not np.isnan(prices[idx]) and prices[idx] > 0:
         first_valid_idx = idx
         break
 
-    if first_valid_idx == -1 or n - first_valid_idx < 3:
+    if first_valid_idx == -1 or n - first_valid_idx < 4:
       return None
 
     p11, p12, p21, p22 = 1.0, 0.0, 0.0, 1.0
-    curr_x = prices[first_valid_idx]
+    curr_x = np.log(prices[first_valid_idx]) * log_scale
     curr_v = 0.0
-    prev_v = 0.0
+    v_price_hist = [0.0]
 
     for i in range(first_valid_idx + 1, n):
       c = prices[i]
-      if np.isnan(c):
-        prev_v = curr_v
+      if np.isnan(c) or c <= 0:
+        v_price_hist.append(v_price_hist[-1])
         continue
 
+      y_obs = np.log(c) * log_scale
       x_pred = curr_x + curr_v
       v_pred = curr_v
       p11_pred = p11 + p12 + p21 + p22 + q1
@@ -204,14 +202,14 @@ def calc_kalman_filter_signal(close, r=10.0, q1=0.01, q2=0.01):
       p21_pred = p21 + p22
       p22_pred = p22 + q2
 
-      y_res = c - x_pred
+      y_res = y_obs - x_pred
       s_kf = max(p11_pred + r, 1e-10)
       k1 = p11_pred / s_kf
       k2 = p21_pred / s_kf
 
       curr_x = x_pred + k1 * y_res
-      prev_v = curr_v
       curr_v = v_pred + k2 * y_res
+      v_price_hist.append(curr_v * (c / log_scale))
 
       ik1 = 1.0 - k1
       new_p11 = ik1 * ik1 * p11_pred + k1 * k1 * r
@@ -225,16 +223,32 @@ def calc_kalman_filter_signal(close, r=10.0, q1=0.01, q2=0.01):
       p21 = new_p21
       p22 = max(new_p22, 1e-9)
 
-    v_today = curr_v
-    v_prev = prev_v
+    if len(v_price_hist) < 3:
+      return None
+
+    v_today = v_price_hist[-1]
+    v_prev = v_price_hist[-2]
+    v_prev2 = v_price_hist[-3]
+    kf_tags = []
 
     if not (np.isnan(v_today) or np.isnan(v_prev)):
       if (v_prev < 0.0) and (v_today >= 0.0):
-        return '[KF] 多空轉換 (空轉多)'
+        kf_tags.append('[KF] 多空轉換(空轉多)')
       elif (v_prev >= 0.0) and (v_today < 0.0):
-        return '[KF] 多空轉換 (多轉空)'
+        kf_tags.append('[KF] 多空轉換(多轉空)')
 
-    return None
+      if atr_val is not None and not np.isnan(atr_val) and atr_val > 0 and not np.isnan(v_prev2):
+        acc_today = v_today - v_prev
+        acc_prev = v_prev - v_prev2
+        norm_v = abs(v_today) / atr_val
+        norm_acc = abs(acc_today) / atr_val
+        if norm_v >= 0.25 and norm_acc <= 0.04:
+          if v_today > 0.0 and acc_prev > 0.0 and acc_today <= 0.0:
+            kf_tags.append('[KF] 賣點-趨勢力竭')
+          elif v_today < 0.0 and acc_prev < 0.0 and acc_today >= 0.0:
+            kf_tags.append('[KF] 買點-趨勢力竭')
+
+    return ' '.join(kf_tags) if kf_tags else None
   except Exception as e:
     print(f"Error calculating Kalman Filter signal: {e}", file=sys.stdout)
     return None
@@ -332,8 +346,66 @@ def ma_calculation(ticker, session, use_adj=True, return_macd=False, return_indi
     if n < 200:
       print(f'{ticker[0]}: Only {n} data points, MA200 unavailable', file=sys.stdout)
 
+    # 順便從同一個 chart JSON 提取最近 30 筆 OHLCV 計算輕量化微觀結構靜態參考位 (零額外網路 I/O)
+    atr_for_kf = None
+    try:
+      q_ind = (result[0]["indicators"].get("quote") or [{}])[0]
+      h_raw = q_ind.get("high") or []
+      l_raw = q_ind.get("low") or []
+      c_raw_q = q_ind.get("close") or []
+      v_raw = q_ind.get("volume") or [0] * len(c_raw_q)
+      bars = [
+        (float(h), float(l), float(c), float(v if v is not None else 0))
+        for h, l, c, v in zip(h_raw[-30:], l_raw[-30:], c_raw_q[-30:], v_raw[-30:])
+        if h is not None and l is not None and c is not None
+      ]
+      def _build_snap(b):
+        if len(b) < 21:
+          return None
+        prev_h, prev_l, prev_c, _ = b[-1]
+        trs = [
+          max(b[k][0] - b[k][1], abs(b[k][0] - b[k - 1][2]), abs(b[k][1] - b[k - 1][2]))
+          for k in range(-20, 0)
+        ]
+        atr20 = sum(trs) / 20.0
+        rng_prev = prev_h - prev_l
+        min_rng_7 = min(x[0] - x[1] for x in b[-7:])
+        was_nr7 = (rng_prev <= min_rng_7) and (atr20 > 0 and (rng_prev / atr20) < 0.65)
+        was_ib = (prev_h < b[-2][0]) and (prev_l > b[-2][1])
+        nr7_h = (b[-2][0] if was_ib else prev_h) if (was_nr7 or was_ib) else None
+        nr7_l = (b[-2][1] if was_ib else prev_l) if (was_nr7 or was_ib) else None
+        return {
+          "prev_h": prev_h,
+          "prev_l": prev_l,
+          "prev_c": prev_c,
+          "atr20": atr20,
+          "nr7_ref_h": nr7_h,
+          "nr7_ref_l": nr7_l,
+          "swing_low_20": min(x[1] for x in b[-20:]),
+          "swing_high_20": max(x[0] for x in b[-20:]),
+        }
+      if len(bars) >= 22:
+        snap_norm = _build_snap(bars[:-1])
+        snap_pre = _build_snap(bars)
+        atr_for_kf = snap_pre["atr20"] if snap_pre else None
+        # 口袋支點 (Pocket Pivot): 最新一根收漲、站上 MA60 且成交量大於過去 10 日最大下跌量
+        vcp_pivot = False
+        if len(bars) >= 12 and ma60 is not None:
+          c_last, v_last = bars[-1][2], bars[-1][3]
+          c_prev_bar = bars[-2][2]
+          if c_last > c_prev_bar and c_last >= ma60 and v_last > 0:
+            down_vols = [bars[k][3] for k in range(-11, -1) if bars[k][2] < bars[k - 1][2]]
+            max_dv = max(down_vols) if down_vols else 0
+            if max_dv > 0 and v_last > max_dv:
+              vcp_pivot = True
+        q_entry = {"normal": snap_norm, "preopen": snap_pre, "vcp_pivot": vcp_pivot}
+        _quant_ref[ticker[0]] = q_entry
+        _quant_ref[ticker[0].upper()] = q_entry
+    except Exception as e:
+      print(f"Error building quant_ref for {ticker[0]}: {e}", file=sys.stdout)
+
     macd_fall = calc_macd_hist_r_fall(close) if (return_macd or return_indicators) else 0
-    kf_sig = calc_kalman_filter_signal(close) if return_indicators else None
+    kf_sig = calc_kalman_filter_signal(close, atr_val=atr_for_kf) if return_indicators else None
     res = [None, ma10, ma20, ma60, ma200, ma10_1, ma20_1, ma60_1, ma200_1, std200]
     if return_indicators:
       return (res, macd_fall, kf_sig)
@@ -384,20 +456,20 @@ def get_fitx_histock(session):
 
 ################################################################################################################################################################
 def get_taiex_sentiment(session=None):
-  """抓取加權指數即時行情、市場寬度、多空能量計與情緒量化模型"""
+  """抓取加權指數、台指期即時價差、櫃買OTC市場寬度、類股資金流向與多空情緒量化模型 (與 YfinanceAnalysis 完全同步；週六日不執行)"""
+  if datetime.now(ZoneInfo("Asia/Taipei")).weekday() >= 5:
+    return None
+  req_sess = session or requests.Session(impersonate="chrome")
   try:
-    url = f"{mdj_url.rstrip('/')}/Z/js/SKV/TSE,1/SKVgetv1.djxml?x=1&a=TSE,1&b=0&c=0&d=0"
-    if session:
-      resp = session.get(url, timeout=5)
-    else:
-      resp = requests.get(url, timeout=5)
-
-    if resp.status_code != 200 or not resp.content:
-      print(f"[TAIEX Sentiment] HTTP error: {resp.status_code}")
+    # 1. 加權指數即時行情 (TSE,1)
+    url_tse = f"{mdj_url.rstrip('/')}/Z/js/SKV/TSE,1/SKVgetv1.djxml?x=1&a=TSE,1&b=0&c=0&d=0"
+    resp_tse = req_sess.get(url_tse, timeout=5)
+    if resp_tse.status_code != 200 or not resp_tse.content:
+      print(f"[TAIEX Sentiment] HTTP error: {resp_tse.status_code}")
       return None
 
-    root = ET.fromstring(resp.content)
-    data = root.find('Data')
+    root_tse = ET.fromstring(resp_tse.content)
+    data = root_tse.find('Data')
     if data is None:
       print("[TAIEX Sentiment] No Data element in XML")
       return None
@@ -409,6 +481,7 @@ def get_taiex_sentiment(session=None):
     h = float(data.get('H', 0)) / 100.0
     l = float(data.get('L', 0)) / 100.0
     clv = (p - l) / (h - l) if (h - l) > 0 else 0.5
+    day_range_pct = ((h - l) / pc) * 100.0 if pc > 0 and h >= l else 0.0
 
     up_cnt = int(data.get('UpS', 0))
     down_cnt = int(data.get('DownS', 0))
@@ -428,20 +501,147 @@ def get_taiex_sentiment(session=None):
     avg_ask = tas / tac if tac > 0 else 0.0
     large_order_ratio = (avg_bid / avg_ask) if avg_ask > 0 else 1.0
 
+    # 2. 台指期近月即時行情與相對基差百分比 (TX,3)
+    tx_p = 0.0
+    tx_chg = 0.0
+    tx_chg_pct = 0.0
+    tx_vol = 0
+    basis = 0.0
+    basis_pct = 0.0
+    basis_status = "中性價差"
+    try:
+      url_tx = f"{mdj_url.rstrip('/')}/Z/js/SKV/TX,3/SKVgetv1.djxml?x=1&a=TX,3&b=0&c=0&d=0"
+      resp_tx = req_sess.get(url_tx, timeout=3)
+      if resp_tx.status_code == 200 and resp_tx.content:
+        root_tx = ET.fromstring(resp_tx.content)
+        data_tx = root_tx.find('Data')
+        if data_tx is not None:
+          tx_p = float(data_tx.get('P', 0)) / 100.0
+          tx_pc = float(data_tx.get('PC', 0)) / 100.0
+          tx_chg = tx_p - tx_pc
+          tx_chg_pct = (tx_chg / tx_pc) * 100.0 if tx_pc else 0.0
+          tx_vol = int(data_tx.get('V', 0))
+          if tx_p > 0 and p > 0:
+            basis = round(tx_p - p, 2)
+            basis_pct = round((basis / p) * 100.0, 3)
+            if basis_pct >= 0.25:
+              basis_status = f"大額正價差 (+{basis:.1f}點 / +{basis_pct:.2f}%) 軋空推升"
+            elif basis_pct <= -0.30:
+              basis_status = f"深度逆價差 ({basis:.1f}點 / {basis_pct:.2f}%) 避險貼水"
+            else:
+              basis_status = f"{basis:+.1f}點 ({basis_pct:+.2f}%)"
+    except Exception:
+      pass
+
+    # 3. 櫃買指數即時市場寬度 (OTC,1)
+    otc_p = 0.0
+    otc_chg = 0.0
+    otc_chg_pct = 0.0
+    otc_up = 0
+    otc_down = 0
+    otc_upl = 0
+    otc_downl = 0
+    otc_ad = 1.0
+    data_otc = None
+    try:
+      url_otc = f"{mdj_url.rstrip('/')}/Z/js/SKV/OTC,1/SKVgetv1.djxml?x=1&a=OTC,1&b=0&c=0&d=0"
+      resp_otc = req_sess.get(url_otc, timeout=3)
+      if resp_otc.status_code == 200 and resp_otc.content:
+        root_otc = ET.fromstring(resp_otc.content)
+        data_otc = root_otc.find('Data')
+        if data_otc is not None:
+          otc_p = float(data_otc.get('P', 0)) / 100.0
+          otc_pc = float(data_otc.get('PC', 0)) / 100.0
+          otc_chg = otc_p - otc_pc
+          otc_chg_pct = (otc_chg / otc_pc) * 100.0 if otc_pc else 0.0
+          otc_up = int(data_otc.get('UpS', 0))
+          otc_down = int(data_otc.get('DownS', 0))
+          otc_upl = int(data_otc.get('UpLS', 0))
+          otc_downl = int(data_otc.get('DownLS', 0))
+          otc_ad = round(otc_up / otc_down, 2) if otc_down > 0 else 99.0
+    except Exception:
+      pass
+
+    # 4. 類股即時資金流向 (Sector flows - 免額外套件正則與基礎解析)
+    elec_pct = 0.0
+    elec_status = "常態輪動"
+    top_sectors_str = ""
+    try:
+      url_sec = f"{mdj_url.rstrip('/')}/z/zba.djhtm?ASPID=sysjust"
+      resp_sec = req_sess.get(url_sec, timeout=3)
+      if resp_sec.status_code == 200 and resp_sec.content:
+        html_sec = resp_sec.content.decode('cp950', errors='ignore')
+        cut_idx = html_sec.find('上櫃資金流向表')
+        if cut_idx < 0:
+          cut_idx = html_sec.find('資金流向明細圖')
+        tse_html = html_sec[:cut_idx] if cut_idx > 0 else html_sec
+        cells = [re.sub(r'<[^>]+>', '', m).strip() for m in re.findall(r'<td[^>]*>(.*?)</td>', tse_html, re.S | re.I)]
+        cells = [c for c in cells if c]
+        tse_list = []
+        for i in range(len(cells) - 1):
+          if not cells[i].endswith('%') and cells[i + 1].endswith('%') and len(cells[i]) <= 10:
+            try:
+              tse_list.append((cells[i], float(cells[i + 1].replace('%', ''))))
+            except Exception:
+              pass
+        tse_list.sort(key=lambda x: x[1], reverse=True)
+        elec_pct = next((x[1] for x in tse_list if x[0] == '電子'), 0.0)
+        if elec_pct >= 70.0:
+          elec_status = f"🔥 電子吸金攻擊盤 ({elec_pct:.1f}%)"
+        elif 0 < elec_pct <= 55.0:
+          elec_status = f"⚠️ 電子資金外溢 ({elec_pct:.1f}%)"
+        else:
+          elec_status = f"⚪ 電子常態輪動 ({elec_pct:.1f}%)"
+        top_list = [f"{x[0]} {x[1]:.1f}%" for x in tse_list if x[0] != '電子'][:3]
+        top_sectors_str = " | ".join(top_list)
+    except Exception:
+      pass
+
+    # 5. 全市場總寬度 (TSE + OTC)
+    total_up = up_cnt + otc_up
+    total_down = down_cnt + otc_down
+    total_upl = upl_cnt + otc_upl
+    total_downl = downl_cnt + otc_downl
+    total_ad = round(total_up / total_down, 2) if total_down > 0 else 99.0
+    total_up_ratio = round(total_up / (total_up + total_down) * 100.0, 1) if (total_up + total_down) else 50.0
+
+    # 6. 即時背離與動能訊號 (含濾噪緩衝區 Deadband 與台股微觀大單邏輯)
     divergence_flags = []
-    if chg > 0 and up_cnt < down_cnt:
-      divergence_flags.append("⚠️ 【拉積盤/指跌背離】指數上漲但下跌家數過半，主力拉權值掩護中小型股出貨！")
-    elif chg < 0 and up_cnt > down_cnt:
-      divergence_flags.append("💎 【壓盤洗籌/指漲背離】指數微跌但上漲家數居多，市場體質強韌，主力暗中吃貨！")
+    if chg_pct >= 0.30 and (total_up_ratio < 42.0 or total_ad <= 0.75):
+      divergence_flags.append(f"⚠️ 【拉積盤/指跌背離】加權上漲 {chg_pct:+.2f}% 但全市場上漲僅 {total_up_ratio:.1f}% (AD={total_ad:.2f})，主力拉權值掩護中小型股出貨！")
+    elif chg_pct <= -0.20 and (total_up_ratio >= 55.0 or total_ad >= 1.20 or otc_chg_pct >= 0.25):
+      divergence_flags.append(f"💎 【壓盤洗籌/指漲背離】加權下跌 {chg_pct:+.2f}% 但全市場上漲達 {total_up_ratio:.1f}% (AD={total_ad:.2f})，市場體質強韌，主力暗中吃貨！")
 
-    if chg_pct > 1.0 and clv < 0.35:
-      divergence_flags.append("🚨 【高檔引爆獲利賣壓】早盤大漲但尾盤收近當日最低，留長上影線！")
-    elif chg_pct < -1.0 and clv > 0.65:
-      divergence_flags.append("🔴 【低檔強力承接反彈】早盤重挫但尾盤強拉收高，下影線長！")
+    if chg_pct >= 0.25 and otc_chg_pct <= -0.30 and otc_ad <= 0.75:
+      divergence_flags.append(f"⚠️ 【拉大出小/中小型失血】加權漲 {chg_pct:+.2f}% 但櫃買跌 {otc_chg_pct:+.2f}% (OTC AD={otc_ad:.2f})，資金抽離中小型股！")
+    elif otc_chg_pct > (chg_pct + 0.50) and otc_upl >= 15:
+      divergence_flags.append(f"🚀 【內資狂熱/中小型衝刺】櫃買動能 ({otc_chg_pct:+.2f}%) 顯著強於大盤，上櫃漲停達 {otc_upl} 檔，內資主力積極主導！")
 
-    score_breadth = min(max(up_ratio, 0.0), 100.0)
-    score_speculation = min(max(50.0 + (upl_cnt - downl_cnt) * 2.0, 0.0), 100.0)
-    score_orderflow = min(max(50.0 + (ba_ratio - 1.0) * 100.0, 0.0), 100.0)
+    if basis_pct >= 0.25:
+      divergence_flags.append(f"🔴 【期現大額正價差】台指期大幅溢價 +{basis:.1f} 點 ({basis_pct:+.2f}%)，期貨大戶極度偏多軋空！")
+    elif basis_pct <= -0.30:
+      divergence_flags.append(f"🟢 【期現深度逆價差】台指期逆價差達 {basis:.1f} 點 ({basis_pct:+.2f}%)，期貨避險賣壓或除息貼水沉重！")
+
+    if chg_pct <= -0.20 and large_order_ratio >= 1.30:
+      divergence_flags.append(f"💎 【大戶逆勢掛大單低接】指數回檔但主力大單比高達 {large_order_ratio:.2f} (均買 {avg_bid:.1f}張 vs 均賣 {avg_ask:.1f}張)，下檔大戶承接強勁！")
+    elif chg_pct >= 0.30 and large_order_ratio <= 0.75:
+      divergence_flags.append(f"⚠️ 【大戶逢高拆單出貨】指數上漲但主力大單比降至 {large_order_ratio:.2f} (均買 {avg_bid:.1f}張 vs 均賣 {avg_ask:.1f}張)，提防大戶倒貨散戶追高！")
+
+    if 0 < elec_pct <= 55.0:
+      sec_hint = f" ({top_sectors_str})" if top_sectors_str else ""
+      divergence_flags.append(f"⚠️ 【電子資金外溢】電子成交比重降至 {elec_pct:.1f}% (<55%)，資金轉向非電族群{sec_hint}，電子易盤整！")
+
+    if chg_pct > 0.80 and day_range_pct >= 0.80 and clv < 0.35:
+      divergence_flags.append(f"🚨 【高檔引爆獲利賣壓】日內振幅達 {day_range_pct:.2f}% 且收近當日最低 (CLV={clv:.2f})，留長上影線！")
+    elif chg_pct < -0.80 and day_range_pct >= 0.80 and clv > 0.65:
+      divergence_flags.append(f"🔴 【低檔強力承接反彈】日內振幅達 {day_range_pct:.2f}% 且急拉收近當日最高 (CLV={clv:.2f})，留長下影線！")
+
+    # 7. 情緒評分模型 (綜合全市場寬度 40%、漲跌停投機度 25%、大單+委買賣訂單流 20%、日內收盤位置 CLV 15%)
+    score_breadth = min(max(total_up_ratio, 0.0), 100.0)
+    score_speculation = min(max(50.0 + (total_upl - total_downl) * 1.5, 0.0), 100.0)
+    score_orderflow_ba = min(max(50.0 + (ba_ratio - 1.0) * 100.0, 0.0), 100.0)
+    score_orderflow_lo = min(max(50.0 + (large_order_ratio - 1.0) * 80.0, 0.0), 100.0)
+    score_orderflow = score_orderflow_lo * 0.60 + score_orderflow_ba * 0.40
     score_clv = clv * 100.0
 
     sentiment_score = round(
@@ -468,12 +668,21 @@ def get_taiex_sentiment(session=None):
       regime = "❄️ 極度恐慌 (Extreme Fear)"
       action = "市場出現踩踏拋售與流動性恐慌，跌停家數偏高。短線不宜盲目殺低，準備留意超跌黃金買點！"
 
+    tse_tv = round(float(data.get('TV', 0)) / 10000.0, 2)
+    otc_tv = round(float(data_otc.get('TV', 0)) / 10000.0, 2) if data_otc is not None else 0.0
+    total_tv = round(tse_tv + otc_tv, 2)
+
     result = {
       'symbol': '加權指數',
       'price': p,
       'change': round(chg, 2),
       'change_pct': round(chg_pct, 2),
-      'turnover_billion': round(float(data.get('TV', 0)) / 10000.0, 2),
+      'turnover_billion': tse_tv,
+      'turnover': {
+        'tse_billion': tse_tv,
+        'otc_billion': otc_tv,
+        'total_billion': total_tv,
+      },
       'sentiment_score': sentiment_score,
       'regime': regime,
       'action_guidance': action,
@@ -484,6 +693,40 @@ def get_taiex_sentiment(session=None):
         'ad_ratio': round(ad_ratio, 2),
         'limit_up': upl_cnt,
         'limit_down': downl_cnt,
+      },
+      'futures': {
+        'symbol': '台指期近月',
+        'price': tx_p,
+        'change': round(tx_chg, 2),
+        'change_pct': round(tx_chg_pct, 2),
+        'volume': tx_vol,
+        'basis': basis,
+        'basis_pct': basis_pct,
+        'basis_status': basis_status,
+      },
+      'otc': {
+        'symbol': '櫃買指數',
+        'price': otc_p,
+        'change': round(otc_chg, 2),
+        'change_pct': round(otc_chg_pct, 2),
+        'up_count': otc_up,
+        'down_count': otc_down,
+        'limit_up': otc_upl,
+        'limit_down': otc_downl,
+        'ad_ratio': otc_ad,
+      },
+      'total_breadth': {
+        'total_up': total_up,
+        'total_down': total_down,
+        'total_upl': total_upl,
+        'total_downl': total_downl,
+        'total_ad': total_ad,
+        'total_up_ratio': total_up_ratio,
+      },
+      'sector_flows': {
+        'elec_pct': round(elec_pct, 1),
+        'elec_status': elec_status,
+        'top_sectors_str': top_sectors_str,
       },
       'order_flow': {
         'bid_volume_lots': tbs,
@@ -506,14 +749,24 @@ def get_taiex_sentiment(session=None):
     }
 
     chg_icon = "🔴 ▲" if chg > 0 else ("🟢 ▼" if chg < 0 else "⚪")
+    otc_icon = "🔴 ▲" if otc_chg > 0 else ("🟢 ▼" if otc_chg < 0 else "⚪")
     tg_lines = [
-      f"🏛️ <b>【大盤即時情緒與市場寬度】</b>",
-      f"• <b>加權指數</b>: <code>{p:,.2f}</code> {chg_icon} <b>{chg:+,.2f} ({chg_pct:+.2f}%)</b>",
-      f"• <b>情緒指數</b>: <b>{sentiment_score}</b> | <b>{regime}</b>",
-      f"• <b>市場寬度</b>: 🔴 漲 <b>{up_cnt}</b> / 🟢 跌 <b>{down_cnt}</b> (騰落比: <code>{ad_ratio:.2f}</code>)",
-      f"• <b>漲跌停數</b>: 漲停 <b>{upl_cnt}</b> | 跌停 <b>{downl_cnt}</b>",
-      f"• <b>主力大單</b>: 均買 <code>{avg_bid:.2f}張</code> vs 均賣 <code>{avg_ask:.2f}張</code> (主力比: <code>{large_order_ratio:.2f}</code>)",
+      f"🏛️ <b>【大盤即時情緒與全市場寬度】</b>",
+      f"• <b>加權指數</b>: <code>{p:,.2f}</code> {chg_icon} <b>{chg:+,.2f} ({chg_pct:+.2f}%)</b> | 成交 <code>{tse_tv:.0f}億</code>",
     ]
+    if otc_p > 0:
+      tg_lines.append(f"• <b>櫃買指數</b>: <code>{otc_p:,.2f}</code> {otc_icon} <b>{otc_chg:+,.2f} ({otc_chg_pct:+.2f}%)</b> | AD <code>{otc_ad:.2f}</code>")
+    if tx_p > 0:
+      tg_lines.append(f"• <b>台指期近月</b>: <code>{tx_p:,.0f}</code> (價差: <b>{basis_status}</b>)")
+    tg_lines.extend([
+      f"• <b>情緒指數</b>: <b>{sentiment_score}</b> | <b>{regime}</b>",
+      f"• <b>全市場寬度</b>: 🔴 漲 <b>{total_up}</b> / 🟢 跌 <b>{total_down}</b> (總騰落比: <code>{total_ad:.2f}</code>)",
+      f"• <b>全市場漲跌停</b>: 漲停 <b>{total_upl}</b> (上市{upl_cnt}/上櫃{otc_upl}) | 跌停 <b>{total_downl}</b>",
+      f"• <b>主力大單</b>: 均買 <code>{avg_bid:.2f}張</code> vs 均賣 <code>{avg_ask:.2f}張</code> (主力比: <code>{large_order_ratio:.2f}</code>)",
+    ])
+    if elec_pct > 0:
+      sec_tail = f" | 熱門: {top_sectors_str}" if top_sectors_str else ""
+      tg_lines.append(f"• <b>類股資金</b>: {elec_status}{sec_tail}")
     if divergence_flags:
       for a in divergence_flags:
         tg_lines.append(f"• <b>警報提示</b>: <b>{a}</b>")
@@ -525,7 +778,7 @@ def get_taiex_sentiment(session=None):
 
     print(f"\n[TAIEX Sentiment] {result['symbol']}: {result['price']:,.2f} {chg_icon} ({result['change']:+.2f}, {result['change_pct']:+.2f}%)")
     print(f"  Score: {result['sentiment_score']} | {result['regime']}")
-    print(f"  Breadth: 🔴 漲 {up_cnt} / 🟢 跌 {down_cnt} (AD: {result['breadth']['ad_ratio']}) | 漲停: {upl_cnt} / 跌停: {downl_cnt}")
+    print(f"  Total Breadth: 🔴 漲 {total_up} / 🟢 跌 {total_down} (AD: {total_ad}) | 漲停: {total_upl} / 跌停: {total_downl}")
     print(f"  OrderFlow: Net Bid {result['order_flow']['net_bid_lots']:,} lots (B/A: {result['order_flow']['bid_ask_ratio']}) | Large Order Ratio: {result['order_flow']['large_order_ratio']}")
     for alert in divergence_flags:
       print(f"  {alert}")
@@ -542,6 +795,7 @@ def get_taiex_sentiment(session=None):
 _fire_timestamp = [30, 450, 810, 1290]  # persists across requests
 _macd_w_is_fall = {}  # persists across requests
 _kf_signals = {}  # persists across requests
+_quant_ref = {}  # persists across requests
 _taiex_sentiment = {}  # persists across requests
 
 ################################################################################################################################################################
@@ -562,7 +816,7 @@ def index():
 @app.route('/fire/')
 def fire():
 
-  global _fire_timestamp, _macd_w_is_fall, _kf_signals, _yahoo_crumb, _taiex_sentiment
+  global _fire_timestamp, _macd_w_is_fall, _kf_signals, _quant_ref, _yahoo_crumb, _taiex_sentiment
 
   gc.collect()
 
@@ -572,6 +826,7 @@ def fire():
   leisure_time = False
   macd_w_is_fall = dict(_macd_w_is_fall)
   kf_signals = dict(_kf_signals)
+  quant_ref = dict(_quant_ref)
   taiex_sentiment = dict(_taiex_sentiment)
 
   timestamp = _fire_timestamp  # use persisted value; updated when JSON loads
@@ -732,12 +987,14 @@ def fire():
 
     _macd_w_is_fall = dict(macd_w_is_fall)
     _kf_signals = dict(kf_signals)
+    quant_ref = dict(_quant_ref)
 
-    taiex_sentiment = get_taiex_sentiment(session)
-    if taiex_sentiment:
-      _taiex_sentiment = taiex_sentiment
-      if taiex_sentiment.get('telegram_msg'):
-        msg_toast.append(taiex_sentiment['telegram_msg'])
+    if day < 5:
+      taiex_sentiment = get_taiex_sentiment(session)
+      if taiex_sentiment:
+        _taiex_sentiment = taiex_sentiment
+        if taiex_sentiment.get('telegram_msg'):
+          msg_toast.append(taiex_sentiment['telegram_msg'])
 
     #msg_toast.append(get_fitx_histock(session))     # Replaced by WTX& (台指期) in tw.stock Yahoo portfolio
 
@@ -801,6 +1058,19 @@ def fire():
           price_1 = float(jp.get('regularMarketPreviousClose', {}).get('raw', price))
         except (ValueError, TypeError):
           price_1 = price
+
+        try:
+          day_open = float(jp.get('regularMarketOpen', {}).get('raw', price))
+        except (ValueError, TypeError):
+          day_open = price
+        try:
+          day_high = float(jp.get('regularMarketDayHigh', {}).get('raw', price))
+        except (ValueError, TypeError):
+          day_high = price
+        try:
+          day_low = float(jp.get('regularMarketDayLow', {}).get('raw', price))
+        except (ValueError, TypeError):
+          day_low = price
 
         sdp_base = sdp_base_tw if ".TW" in s else sdp_base_us
         if sdp_base is None:
@@ -978,10 +1248,60 @@ def fire():
             if (ma20 < ma60) and (ma20_1 >= ma60_1):
               msg += f' {l_c_d}<b>MA2060={ma20:.{precision}f},{ma60:.{precision}f}</b>'
 
-          # Kalman Filter Zero-crossing
+          # Kalman Filter Zero-crossing & Trend Exhaustion
           ticker_kf = portfolio[port_idx][IDX_T]
           if ticker_kf in kf_signals and kf_signals[ticker_kf]:
             msg += f' <b>{kf_signals[ticker_kf]}</b>'
+
+          # 輕量化華爾街微觀結構附掛檢查 (模式 A：僅於 msg 已觸發時附掛，O(1) 運算)
+          q_pair = quant_ref.get(ticker_kf)
+          if q_pair:
+            q_norm = q_pair.get("normal")
+            q_pre = q_pair.get("preopen")
+            if q_norm and q_pre:
+              q = q_pre if abs(q_pre["prev_c"] - price_1) < abs(q_norm["prev_c"] - price_1) else q_norm
+            else:
+              q = q_norm or q_pre
+
+            if q:
+              o_now = day_open
+              h_now = max(day_high, price)
+              l_now = min(day_low, price)
+              rng_now = h_now - l_now
+              clv_now = (price - l_now) / rng_now if rng_now > 1e-6 else 0.5
+              atr20 = q["atr20"]
+
+              # (1) [NR7-BRK] 昨日 NR7/孕線極度壓縮，今日突破/破底
+              if q["nr7_ref_h"] is not None and rng_now > 0:
+                if price > q["nr7_ref_h"] and clv_now >= 0.70:
+                  msg += ' <b>[↗NR7突破]</b>'
+                elif price < q["nr7_ref_l"] and clv_now <= 0.30:
+                  msg += ' <b>[↘NR7破底]</b>'
+
+              # (2) [SWEEP-2B] 20日區間流動性掃蕩 (破底翻 / 假突破)
+              if l_now < q["swing_low_20"] and price > q["swing_low_20"] and clv_now >= 0.65 and price > o_now:
+                msg += ' <b>[↗2B破底翻]</b>'
+              elif h_now > q["swing_high_20"] and price < q["swing_high_20"] and clv_now <= 0.35 and price < o_now:
+                msg += ' <b>[↘2B假突破]</b>'
+
+              # (3) [GAP-GO] 跳空不補強勢動能
+              if atr20 > 0:
+                if (o_now - q["prev_h"]) >= 0.3 * atr20 and l_now >= q["prev_h"] and price > o_now and clv_now >= 0.65:
+                  msg += ' <b>[↗跳空不補]</b>'
+                elif (q["prev_l"] - o_now) >= 0.3 * atr20 and h_now <= q["prev_l"] and price < o_now and clv_now <= 0.35:
+                  msg += ' <b>[↘跳空破位]</b>'
+
+              # (4) [ATR-Z] 極端波動率乖離耗竭
+              if ma20 is not None and atr20 > 0:
+                atr_z = (price - ma20) / atr20
+                if atr_z <= -2.5 and price >= o_now and clv_now >= 0.50:
+                  msg += f' <b>[↗超跌反彈(Z={atr_z:.1f})]</b>'
+                elif atr_z >= 3.0 and price <= o_now and clv_now <= 0.50:
+                  msg += f' <b>[↘過熱鈍化(Z={atr_z:.1f})]</b>'
+
+            # (5) [VCP] 口袋支點 (僅在整點/收盤全報表 portfolio_cnt == 0 時附掛)
+            if portfolio_cnt == 0 and q_pair.get("vcp_pivot"):
+              msg += ' <b>[VCP口袋支點]</b>'
 
           # Add chart
           if (l_c_u in msg) or (l_c_d in msg):
