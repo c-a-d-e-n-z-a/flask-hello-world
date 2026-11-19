@@ -491,15 +491,22 @@ def get_taiex_sentiment(session=None):
     up_ratio = (up_cnt / total_active * 100.0) if total_active else 50.0
     ad_ratio = (up_cnt / down_cnt) if down_cnt > 0 else 99.0
 
-    tbs = int(data.get('TBS', 0))
-    tas = int(data.get('TAS', 0))
-    tbc = int(data.get('TBC', 1))
-    tac = int(data.get('TAC', 1))
+    # SKVgetv1 (TSE,1) 實測：TBC/TAC 為委買/委賣總張數（對齊 CZBB b=0），TBS/TAS 為委買/委賣總筆數
+    bid_lots = int(data.get('TBC', 0))
+    ask_lots = int(data.get('TAC', 0))
+    bid_cnt = int(data.get('TBS', 1))
+    ask_cnt = int(data.get('TAS', 1))
 
-    ba_ratio = (tbs / tas) if tas > 0 else 1.0
-    avg_bid = tbs / tbc if tbc > 0 else 0.0
-    avg_ask = tas / tac if tac > 0 else 0.0
+    ba_ratio = (bid_lots / ask_lots) if ask_lots > 0 else 1.0
+    cnt_ratio = (bid_cnt / ask_cnt) if ask_cnt > 0 else 1.0
+    avg_bid = (bid_lots / bid_cnt) if bid_cnt > 0 else 0.0
+    avg_ask = (ask_lots / ask_cnt) if ask_cnt > 0 else 0.0
     large_order_ratio = (avg_bid / avg_ask) if avg_ask > 0 else 1.0
+
+    date_str = str(data.get('Date') or '')
+    today_mmdd = date_str[4:8] if len(date_str) >= 8 else date_str
+    t_str = str(data.get('T') or '000000')
+    hhmm = int(t_str[:4]) if len(t_str) >= 4 and t_str[:4].isdigit() else 1330
 
     # 2. 台指期近月即時行情與相對基差百分比 (TX,3)
     tx_p = 0.0
@@ -605,7 +612,96 @@ def get_taiex_sentiment(session=None):
     total_ad = round(total_up / total_down, 2) if total_down > 0 else 99.0
     total_up_ratio = round(total_up / (total_up + total_down) * 100.0, 1) if (total_up + total_down) else 50.0
 
-    # 6. 即時背離與動能訊號 (含濾噪緩衝區 Deadband 與台股微觀大單邏輯)
+    # 5b. 盤中買賣力道 30 日基準 Z-Score (CZBB0 + CZBB) 與盤後散戶逆向指標 (CZBM0)
+    def _fetch_djbcd(path):
+      url_d = f"{mdj_url.rstrip('/')}{path}"
+      r_d = req_sess.get(url_d, timeout=3)
+      if r_d.status_code == 200 and r_d.content:
+        return r_d.content.decode('cp950', errors='ignore').strip().split(' ')
+      return None
+
+    tot_mu, tot_sd = 1.69, 0.12
+    avg_mu, avg_sd = 1.87, 0.24
+    try:
+      p0 = _fetch_djbcd('/Z/ZB/ZBB/CZBB0.DJBCD?a=09999&b=0')
+      p1 = _fetch_djbcd('/Z/ZB/ZBB/CZBB0.DJBCD?a=09999&b=1')
+      if p0 and p1 and len(p0) >= 4 and len(p1) >= 4:
+        h_dates = p0[0].split(',')
+        hist_slice = slice(None, -1) if (h_dates and h_dates[-1] == today_mmdd and len(h_dates) >= 2) else slice(None)
+        h_tot_b = np.array([float(x) for x in p0[2].split(',')[hist_slice] if x])
+        h_tot_a = np.array([float(x) for x in p0[3].split(',')[hist_slice] if x])
+        h_avg_b = np.array([float(x) for x in p1[2].split(',')[hist_slice] if x])
+        h_avg_a = np.array([float(x) for x in p1[3].split(',')[hist_slice] if x])
+        if len(h_tot_b) >= 5 and len(h_tot_b) == len(h_tot_a):
+          h_tot_r = h_tot_b / np.maximum(h_tot_a, 1e-6)
+          tot_mu = float(h_tot_r.mean())
+          tot_sd = max(float(h_tot_r.std(ddof=1)), 1e-6)
+        if len(h_avg_b) >= 5 and len(h_avg_b) == len(h_avg_a):
+          h_avg_r = h_avg_b / np.maximum(h_avg_a, 1e-6)
+          avg_mu = float(h_avg_r.mean())
+          avg_sd = max(float(h_avg_r.std(ddof=1)), 1e-6)
+    except Exception:
+      pass
+
+    rebound_hook = False
+    try:
+      p_czbb = _fetch_djbcd('/Z/ZB/ZBB/CZBB.DJBCD?a=09999&b=2')
+      if p_czbb and len(p_czbb) >= 5:
+        b_vals = [float(x) for x in p_czbb[3].split(',') if x]
+        a_vals = [float(x) for x in p_czbb[4].split(',') if x]
+        if len(b_vals) >= 3 and len(b_vals) == len(a_vals):
+          r_vals = [bv / max(av, 1e-6) for bv, av in zip(b_vals[-3:], a_vals[-3:])]
+          rebound_hook = (r_vals[-1] > r_vals[-2]) and (r_vals[-1] >= r_vals[-3])
+    except Exception:
+      pass
+
+    avg_ratio_z = (large_order_ratio - avg_mu) / avg_sd
+    tot_ratio_z = (ba_ratio - tot_mu) / tot_sd
+
+    if hhmm < 920:
+      intraday_orderflow_sig = '⏳ 開盤競價穩定期前'
+    elif (large_order_ratio <= 1.62 or avg_ratio_z <= -1.0) and rebound_hook:
+      intraday_orderflow_sig = '🟢 殺盤竭盡反彈 (大單開始承接)'
+    elif (large_order_ratio <= 1.52 or avg_ratio_z <= -1.5) and chg_pct <= -2.0:
+      intraday_orderflow_sig = '🔥 恐慌踩踏買點 (賣壓傾巢而出)'
+    elif chg_pct >= 1.0 and cnt_ratio >= 1.06 and (large_order_ratio <= 1.75 or avg_ratio_z <= -0.5):
+      intraday_orderflow_sig = '⚠️ 散戶追高出貨 (小單買/大單倒)'
+    elif cnt_ratio >= 1.03 and tot_ratio_z >= 1.2:
+      intraday_orderflow_sig = '👀 偏多追價過熱 (買盤筆數擁擠)'
+    elif large_order_ratio >= 2.05 and cnt_ratio < 0.92:
+      intraday_orderflow_sig = '💎 大戶實質吸籌 (均買大單撐盤)'
+    else:
+      intraday_orderflow_sig = '⚪ 中性／主力控盤'
+
+    czbm_date = ""
+    czbm_buy = 0.0
+    czbm_sell = 0.0
+    czbm_diff = 0.0
+    czbm_sig = "⚪ 中性震盪"
+    try:
+      p_zbm = _fetch_djbcd('/Z/ZB/ZBM/CZBM0.DJBCD?a=0')
+      if p_zbm and len(p_zbm) >= 3:
+        z_dates = [x for x in p_zbm[0].split(',') if x]
+        z_buys = [float(x) for x in p_zbm[1].split(',') if x]
+        z_sells = [float(x) for x in p_zbm[2].split(',') if x]
+        if z_dates and z_buys and z_sells:
+          d_raw = z_dates[-1]
+          czbm_date = f"0{d_raw[0]}/{d_raw[1:]}" if len(d_raw) == 3 else (f"{d_raw[:2]}/{d_raw[2:]}" if len(d_raw) == 4 else d_raw)
+          czbm_buy = z_buys[-1]
+          czbm_sell = z_sells[-1]
+          czbm_diff = round(czbm_buy - czbm_sell, 2)
+          if czbm_sell >= 4.50 and czbm_diff <= -1.20:
+            czbm_sig = "🔥 散戶恐慌斷頭 (超跌買點)"
+          elif czbm_sell >= 4.20 and czbm_diff <= -0.80:
+            czbm_sig = "🟢 散戶恐慌停損 (留意反彈)"
+          elif czbm_buy >= 4.15 and czbm_diff >= 0.70:
+            czbm_sig = "⚠️ 散戶過熱追價 (頭部風險)"
+          elif czbm_buy >= 3.80 and czbm_diff >= 0.50:
+            czbm_sig = "👀 散戶偏多追價 (短線過熱)"
+    except Exception:
+      pass
+
+    # 6. 即時背離與動能訊號 (含濾噪緩衝區 Deadband 與台股 30 日常態校準之大單/筆數邏輯)
     divergence_flags = []
     if chg_pct >= 0.30 and (total_up_ratio < 42.0 or total_ad <= 0.75):
       divergence_flags.append(f"⚠️ 【拉積盤/指跌背離】加權上漲 {chg_pct:+.2f}% 但全市場上漲僅 {total_up_ratio:.1f}% (AD={total_ad:.2f})，主力拉權值掩護中小型股出貨！")
@@ -622,10 +718,15 @@ def get_taiex_sentiment(session=None):
     elif basis_pct <= -0.30:
       divergence_flags.append(f"🟢 【期現深度逆價差】台指期逆價差達 {basis:.1f} 點 ({basis_pct:+.2f}%)，期貨避險賣壓或除息貼水沉重！")
 
-    if chg_pct <= -0.20 and large_order_ratio >= 1.30:
-      divergence_flags.append(f"💎 【大戶逆勢掛大單低接】指數回檔但主力大單比高達 {large_order_ratio:.2f} (均買 {avg_bid:.1f}張 vs 均賣 {avg_ask:.1f}張)，下檔大戶承接強勁！")
-    elif chg_pct >= 0.30 and large_order_ratio <= 0.75:
-      divergence_flags.append(f"⚠️ 【大戶逢高拆單出貨】指數上漲但主力大單比降至 {large_order_ratio:.2f} (均買 {avg_bid:.1f}張 vs 均賣 {avg_ask:.1f}張)，提防大戶倒貨散戶追高！")
+    if intraday_orderflow_sig.startswith(('🔥', '🟢', '⚠️', '👀', '💎')):
+      divergence_flags.append(
+        f"{intraday_orderflow_sig} (均買 {avg_bid:.2f} vs 均賣 {avg_ask:.2f} 張 | 均買比 {large_order_ratio:.2f}x [{avg_ratio_z:+.2f}σ] | 筆數比 {cnt_ratio:.2f}x)"
+      )
+
+    if czbm_date and czbm_sig != "⚪ 中性震盪":
+      divergence_flags.append(
+        f"👥 【散戶籌碼反指標 ({czbm_date}盤後)】{czbm_sig} (買 {czbm_buy:.2f}% / 賣 {czbm_sell:.2f}% / 淨差 {czbm_diff:+.2f}%)"
+      )
 
     if 0 < elec_pct <= 55.0:
       sec_hint = f" ({top_sectors_str})" if top_sectors_str else ""
@@ -636,11 +737,11 @@ def get_taiex_sentiment(session=None):
     elif chg_pct < -0.80 and day_range_pct >= 0.80 and clv > 0.65:
       divergence_flags.append(f"🔴 【低檔強力承接反彈】日內振幅達 {day_range_pct:.2f}% 且急拉收近當日最高 (CLV={clv:.2f})，留長下影線！")
 
-    # 7. 情緒評分模型 (綜合全市場寬度 40%、漲跌停投機度 25%、大單+委買賣訂單流 20%、日內收盤位置 CLV 15%)
+    # 7. 情緒評分模型 (綜合全市場寬度 40%、漲跌停投機度 25%、30日 Z-Score 校準盤口訂單流 20%、日內收盤位置 CLV 15%)
     score_breadth = min(max(total_up_ratio, 0.0), 100.0)
     score_speculation = min(max(50.0 + (total_upl - total_downl) * 1.5, 0.0), 100.0)
-    score_orderflow_ba = min(max(50.0 + (ba_ratio - 1.0) * 100.0, 0.0), 100.0)
-    score_orderflow_lo = min(max(50.0 + (large_order_ratio - 1.0) * 80.0, 0.0), 100.0)
+    score_orderflow_ba = min(max(50.0 + tot_ratio_z * 20.0, 0.0), 100.0)
+    score_orderflow_lo = min(max(50.0 + avg_ratio_z * 20.0, 0.0), 100.0)
     score_orderflow = score_orderflow_lo * 0.60 + score_orderflow_ba * 0.40
     score_clv = clv * 100.0
 
@@ -729,21 +830,33 @@ def get_taiex_sentiment(session=None):
         'top_sectors_str': top_sectors_str,
       },
       'order_flow': {
-        'bid_volume_lots': tbs,
-        'ask_volume_lots': tas,
-        'net_bid_lots': tbs - tas,
+        'bid_volume_lots': bid_lots,
+        'ask_volume_lots': ask_lots,
+        'net_bid_lots': bid_lots - ask_lots,
         'bid_ask_ratio': round(ba_ratio, 2),
+        'cnt_ratio': round(cnt_ratio, 2),
         'avg_bid_lot': round(avg_bid, 2),
         'avg_ask_lot': round(avg_ask, 2),
         'large_order_ratio': round(large_order_ratio, 2),
+        'avg_ratio_z': round(avg_ratio_z, 2),
+        'tot_ratio_z': round(tot_ratio_z, 2),
+        '30d_avg_ratio_mean': round(avg_mu, 2),
+        'intraday_signal': intraday_orderflow_sig,
+      },
+      'retail_sentiment': {
+        'date': czbm_date,
+        'buy_pct': round(czbm_buy, 2),
+        'sell_pct': round(czbm_sell, 2),
+        'net_diff_pct': czbm_diff,
+        'signal': czbm_sig,
       },
       'up_count': up_cnt,
       'limit_up_count': upl_cnt,
       'down_count': down_cnt,
       'limit_down_count': downl_cnt,
-      'bid_volume_lots': tbs,
-      'ask_volume_lots': tas,
-      'net_bid_lots': tbs - tas,
+      'bid_volume_lots': bid_lots,
+      'ask_volume_lots': ask_lots,
+      'net_bid_lots': bid_lots - ask_lots,
       'divergence_alerts': divergence_flags,
       'time': f"{data.get('Date')} {data.get('T')[:2]}:{data.get('T')[2:4]}:{data.get('T')[4:]}"
     }
@@ -762,8 +875,12 @@ def get_taiex_sentiment(session=None):
       f"• <b>情緒指數</b>: <b>{sentiment_score}</b> | <b>{regime}</b>",
       f"• <b>全市場寬度</b>: 🔴 漲 <b>{total_up}</b> / 🟢 跌 <b>{total_down}</b> (總騰落比: <code>{total_ad:.2f}</code>)",
       f"• <b>全市場漲跌停</b>: 漲停 <b>{total_upl}</b> (上市{upl_cnt}/上櫃{otc_upl}) | 跌停 <b>{total_downl}</b>",
-      f"• <b>主力大單</b>: 均買 <code>{avg_bid:.2f}張</code> vs 均賣 <code>{avg_ask:.2f}張</code> (主力比: <code>{large_order_ratio:.2f}</code>)",
+      f"• <b>主力大單</b>: 均買 <code>{avg_bid:.2f}張</code> vs 均賣 <code>{avg_ask:.2f}張</code> (均買比: <code>{large_order_ratio:.2f}x</code> [{avg_ratio_z:+.2f}σ] | 筆數比: <code>{cnt_ratio:.2f}x</code>) ➔ <b>{intraday_orderflow_sig}</b>",
     ])
+    if czbm_date:
+      tg_lines.append(
+        f"• <b>散戶反指標 ({czbm_date}盤後)</b>: 買 <code>{czbm_buy:.2f}%</code> / 賣 <code>{czbm_sell:.2f}%</code> (淨差 <code>{czbm_diff:+.2f}%</code>) ➔ <b>{czbm_sig}</b>"
+      )
     if elec_pct > 0:
       sec_tail = f" | 熱門: {top_sectors_str}" if top_sectors_str else ""
       tg_lines.append(f"• <b>類股資金</b>: {elec_status}{sec_tail}")
@@ -779,7 +896,9 @@ def get_taiex_sentiment(session=None):
     print(f"\n[TAIEX Sentiment] {result['symbol']}: {result['price']:,.2f} {chg_icon} ({result['change']:+.2f}, {result['change_pct']:+.2f}%)")
     print(f"  Score: {result['sentiment_score']} | {result['regime']}")
     print(f"  Total Breadth: 🔴 漲 {total_up} / 🟢 跌 {total_down} (AD: {total_ad}) | 漲停: {total_upl} / 跌停: {total_downl}")
-    print(f"  OrderFlow: Net Bid {result['order_flow']['net_bid_lots']:,} lots (B/A: {result['order_flow']['bid_ask_ratio']}) | Large Order Ratio: {result['order_flow']['large_order_ratio']}")
+    print(f"  OrderFlow: Net Bid {result['order_flow']['net_bid_lots']:,} lots (B/A: {result['order_flow']['bid_ask_ratio']} [{avg_ratio_z:+.2f}σ], Cnt: {cnt_ratio:.2f}x) | {intraday_orderflow_sig}")
+    if czbm_date:
+      print(f"  Retail ({czbm_date}): Buy {czbm_buy:.2f}% / Sell {czbm_sell:.2f}% / Diff {czbm_diff:+.2f}% | {czbm_sig}")
     for alert in divergence_flags:
       print(f"  {alert}")
 
