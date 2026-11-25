@@ -115,57 +115,53 @@ l_c_d = '\U0000274E'  # MA corss downwards mark ❎
 
 
 ################################################################################################################################################################
-def calc_macd_hist_r_fall(close):
-  """
-  Calculate MACD Hist (R) fall: fast=50, slow=120, signal=30 (matches StockReview report.py)
-  Returns 1 if hist[-1] < hist[-2], else 0.
-  """
-  if not close or len(close) < 150:
-    return 0
+_SIGNAL_ETF_LEV_SET = {
+  '00631L.TW', '00632R.TW', '00675L.TW', '00670L.TW', '00663L.TW', '00664R.TW',
+  'QLD', 'TQQQ', 'SQQQ', 'SOXL', 'SOXS', 'UPRO', 'SPXL', 'SPXS', 'TMF', 'TMV',
+  'FNGU', 'FNGG', 'FNGD', 'NVDL', 'TSLL', 'TNA', 'TZA', 'LABU', 'YINN', 'UDOW', 'SDOW', 'SDS', 'SSO',
+}
+_SIGNAL_ETF_UNLEV_SET = {
+  'VOO', 'SPY', 'IVV', 'VTI', 'QQQ', 'QQQM', 'DIA', 'IWM', 'SMH', 'SOXX', 'SPMO',
+  'GLD', 'SLV', 'TLT', 'IEF', 'SHY', 'HYG', 'LQD', 'USL', 'USO',
+  'XLF', 'XLK', 'XLE', 'XLV', 'XLI', 'XLP', 'XLY', 'XLU', 'XLC', 'XLB', 'XLRE',
+  'DRAM', 'ARKK', 'ARKG', 'IGV', 'GNOM', 'MCHI', 'KWEB', 'REZ', 'ITB', 'FLIN',
+  'VGK', 'VNM', 'EWY', 'EWJ', 'EWT', 'EEM', 'FXI', 'NLR', 'CIBR', 'SCHD', 'JEPI', 'VIG', 'VYM', 'GDX', 'VNQ',
+  'TWA02', 'DX-Y.NYB', '000300.SS',
+}
 
-  try:
-    close_arr = np.array(close, dtype=float)
-    if talib is not None:
-      _, _, hist = talib.MACD(close_arr, fastperiod=50, slowperiod=120, signalperiod=30)
-    else:
-      # Exact NumPy calculation identical to TA-Lib MACD (standard SMA initialization)
-      def _ema(arr, period):
-        n = len(arr)
-        if n < period:
-          return np.full(n, np.nan)
-        res = np.full(n, np.nan)
-        res[period - 1] = np.mean(arr[:period])
-        alpha = 2.0 / (period + 1.0)
-        for i in range(period, n):
-          res[i] = arr[i] * alpha + res[i - 1] * (1.0 - alpha)
-        return res
 
-      fast_ema = _ema(close_arr, 50)
-      slow_ema = _ema(close_arr, 120)
-      macd = fast_ema - slow_ema
-
-      valid_start = 120 - 1
-      sig_valid = _ema(macd[valid_start:], 30)
-      sig = np.full_like(macd, np.nan)
-      sig[valid_start:] = sig_valid
-      hist = macd - sig
-
-    if len(hist) >= 2 and not np.isnan(hist[-1]) and not np.isnan(hist[-2]):
-      return 1 if hist[-1] < hist[-2] else 0
-    return 0
-  except Exception as e:
-    print(f"Error calculating MACD Hist (R): {e}", file=sys.stdout)
-    return 0
+def _classify_signal_asset(ticker, description=''):
+  """依代號與名稱將標的分類為 index_etf_lev、index_etf、tw_stock、us_stock 或 crypto，供訊號自適應分流使用。"""
+  t = str(ticker or '').strip().upper()
+  desc = str(description or '').upper()
+  if not t:
+    return 'us_stock'
+  if '-USD' in t:
+    return 'crypto'
+  if t in _SIGNAL_ETF_LEV_SET:
+    return 'index_etf_lev'
+  if t.startswith('^') or t in _SIGNAL_ETF_UNLEV_SET or '=X' in t or '=F' in t:
+    return 'index_etf'
+  if ('.TW' in t) or ('.TWO' in t):
+    base = t.split('.', 1)[0]
+    if base.startswith('00'):
+      if base.endswith('L') or base.endswith('R') or ('正2' in desc) or ('反1' in desc):
+        return 'index_etf_lev'
+      return 'index_etf'
+    return 'tw_stock'
+  if any(k in desc for k in ('2X', '3X', 'ULTRA', 'BULL 2X', 'BULL 3X')):
+    if 'ETF' in desc or 'INDEX' in desc or 'PROSHARES' in desc:
+      return 'index_etf_lev'
+  if 'ETF' in desc or 'INDEX FUND' in desc:
+    return 'index_etf'
+  return 'us_stock'
 
 
 
 
 ################################################################################################################################################################
-def calc_kalman_filter_signal(close, atr_val=None, r=10.0, q1=0.01, q2=0.01):
-  """
-  Calculate scale-invariant log-price Kalman Filter velocity, zero-crossing, and trend exhaustion:
-  Matches StockReview report.py stock_check_critical_points_after_resample()
-  """
+def calc_kalman_filter_signal(close, r=10.0, q1=0.01, q2=0.01):
+  """計算對數價格卡爾曼濾波速度，僅在多轉空翻轉當日輸出 [KF] 多空轉換(多轉空)。"""
   if not close or len(close) < 4:
     return None
 
@@ -223,32 +219,17 @@ def calc_kalman_filter_signal(close, atr_val=None, r=10.0, q1=0.01, q2=0.01):
       p21 = new_p21
       p22 = max(new_p22, 1e-9)
 
-    if len(v_price_hist) < 3:
+    if len(v_price_hist) < 2:
       return None
 
     v_today = v_price_hist[-1]
     v_prev = v_price_hist[-2]
-    v_prev2 = v_price_hist[-3]
-    kf_tags = []
 
     if not (np.isnan(v_today) or np.isnan(v_prev)):
-      if (v_prev < 0.0) and (v_today >= 0.0):
-        kf_tags.append('[KF] 多空轉換(空轉多)')
-      elif (v_prev >= 0.0) and (v_today < 0.0):
-        kf_tags.append('[KF] 多空轉換(多轉空)')
+      if (v_prev >= 0.0) and (v_today < 0.0):
+        return '[KF] 多空轉換(多轉空)'
 
-      if atr_val is not None and not np.isnan(atr_val) and atr_val > 0 and not np.isnan(v_prev2):
-        acc_today = v_today - v_prev
-        acc_prev = v_prev - v_prev2
-        norm_v = abs(v_today) / atr_val
-        norm_acc = abs(acc_today) / atr_val
-        if norm_v >= 0.25 and norm_acc <= 0.04:
-          if v_today > 0.0 and acc_prev > 0.0 and acc_today <= 0.0:
-            kf_tags.append('[KF] 賣點-趨勢力竭')
-          elif v_today < 0.0 and acc_prev < 0.0 and acc_today >= 0.0:
-            kf_tags.append('[KF] 買點-趨勢力竭')
-
-    return ' '.join(kf_tags) if kf_tags else None
+    return None
   except Exception as e:
     print(f"Error calculating Kalman Filter signal: {e}", file=sys.stdout)
     return None
@@ -257,7 +238,7 @@ def calc_kalman_filter_signal(close, atr_val=None, r=10.0, q1=0.01, q2=0.01):
 
 
 ################################################################################################################################################################
-def ma_calculation(ticker, session, use_adj=True, return_macd=False, return_indicators=False):
+def ma_calculation(ticker, session, use_adj=True, return_indicators=False):
 
   today = date.today()
   startDate = today - timedelta(days=365)
@@ -284,9 +265,7 @@ def ma_calculation(ticker, session, use_adj=True, return_macd=False, return_indi
     if not result:
       print(f'{ticker[0]}: No chart result in response', file=sys.stdout)
       res = [None, None, None, None, None, None, None, None, None, None]
-      if return_indicators:
-        return (res, 0, None)
-      return (res, 0) if return_macd else res
+      return (res, None) if return_indicators else res
 
     close_raw = result[0]["indicators"]["quote"][0]["close"]
     if use_adj == True:
@@ -310,16 +289,12 @@ def ma_calculation(ticker, session, use_adj=True, return_macd=False, return_indi
         close.pop(0)
       if len(close) == 0:
         res = [None, None, None, None, None, None, None, None, None, None]
-        if return_indicators:
-          return (res, 0, None)
-        return (res, 0) if return_macd else res
+        return (res, None) if return_indicators else res
 
     # Guard: no None values but empty/all-invalid data
     if len(close) == 0:
       res = [None, None, None, None, None, None, None, None, None, None]
-      if return_indicators:
-        return (res, 0, None)
-      return (res, 0) if return_macd else res
+      return (res, None) if return_indicators else res
 
     n = len(close)
     precision = 4 if close[-1] < 1 else 2
@@ -347,7 +322,6 @@ def ma_calculation(ticker, session, use_adj=True, return_macd=False, return_indi
       print(f'{ticker[0]}: Only {n} data points, MA200 unavailable', file=sys.stdout)
 
     # 順便從同一個 chart JSON 提取最近 30 筆 OHLCV 計算輕量化微觀結構靜態參考位 (零額外網路 I/O)
-    atr_for_kf = None
     try:
       q_ind = (result[0]["indicators"].get("quote") or [{}])[0]
       h_raw = q_ind.get("high") or []
@@ -373,27 +347,25 @@ def ma_calculation(ticker, session, use_adj=True, return_macd=False, return_indi
         was_nr7 = (rng_prev <= min_rng_7) and (atr20 > 0 and (rng_prev / atr20) < 0.65)
         was_ib = (prev_h < b[-2][0]) and (prev_l > b[-2][1])
         nr7_h = (b[-2][0] if was_ib else prev_h) if (was_nr7 or was_ib) else None
-        nr7_l = (b[-2][1] if was_ib else prev_l) if (was_nr7 or was_ib) else None
         return {
           "prev_h": prev_h,
           "prev_l": prev_l,
           "prev_c": prev_c,
           "atr20": atr20,
           "nr7_ref_h": nr7_h,
-          "nr7_ref_l": nr7_l,
-          "swing_low_20": min(x[1] for x in b[-20:]),
-          "swing_high_20": max(x[0] for x in b[-20:]),
         }
       if len(bars) >= 22:
         snap_norm = _build_snap(bars[:-1])
         snap_pre = _build_snap(bars)
-        atr_for_kf = snap_pre["atr20"] if snap_pre else None
-        # 口袋支點 (Pocket Pivot): 最新一根收漲、站上 MA60 且成交量大於過去 10 日最大下跌量
+        # 口袋支點 (Pocket Pivot): 僅台股個股啟用；最新一根收漲、站上 MA60、近 10MA ±1 ATR 防追高且量破近 10 日最大黑K量
         vcp_pivot = False
-        if len(bars) >= 12 and ma60 is not None:
+        if _classify_signal_asset(ticker[0]) == 'tw_stock' and len(bars) >= 12 and ma60 is not None:
           c_last, v_last = bars[-1][2], bars[-1][3]
           c_prev_bar = bars[-2][2]
-          if c_last > c_prev_bar and c_last >= ma60 and v_last > 0:
+          ma10_bar = sum(x[2] for x in bars[-10:]) / 10.0
+          atr_ppv = snap_pre["atr20"] if snap_pre else 0.0
+          near_ma10 = (atr_ppv > 0) and (abs(c_last - ma10_bar) <= atr_ppv)
+          if c_last > c_prev_bar and c_last >= ma60 and v_last > 0 and near_ma10:
             down_vols = [bars[k][3] for k in range(-11, -1) if bars[k][2] < bars[k - 1][2]]
             max_dv = max(down_vols) if down_vols else 0
             if max_dv > 0 and v_last > max_dv:
@@ -404,21 +376,18 @@ def ma_calculation(ticker, session, use_adj=True, return_macd=False, return_indi
     except Exception as e:
       print(f"Error building quant_ref for {ticker[0]}: {e}", file=sys.stdout)
 
-    macd_fall = calc_macd_hist_r_fall(close) if (return_macd or return_indicators) else 0
-    kf_sig = calc_kalman_filter_signal(close, atr_val=atr_for_kf) if return_indicators else None
+    kf_sig = calc_kalman_filter_signal(close) if return_indicators else None
     res = [None, ma10, ma20, ma60, ma200, ma10_1, ma20_1, ma60_1, ma200_1, std200]
     if return_indicators:
-      return (res, macd_fall, kf_sig)
-    return (res, macd_fall) if return_macd else res
+      return (res, kf_sig)
+    return res
 
   else:
 
     print(f'{ticker[0]}:\n  Error in price list: {url_history}',
           file=sys.stdout)
     res = [None, None, None, None, None, None, None, None, None, None]
-    if return_indicators:
-      return (res, 0, None)
-    return (res, 0) if return_macd else res
+    return (res, None) if return_indicators else res
 
 
 
@@ -912,7 +881,6 @@ def get_taiex_sentiment(session=None):
 
 
 _fire_timestamp = [30, 450, 810, 1290]  # persists across requests
-_macd_w_is_fall = {}  # persists across requests
 _kf_signals = {}  # persists across requests
 _quant_ref = {}  # persists across requests
 _taiex_sentiment = {}  # persists across requests
@@ -935,7 +903,7 @@ def index():
 @app.route('/fire/')
 def fire():
 
-  global _fire_timestamp, _macd_w_is_fall, _kf_signals, _quant_ref, _yahoo_crumb, _taiex_sentiment
+  global _fire_timestamp, _kf_signals, _quant_ref, _yahoo_crumb, _taiex_sentiment
 
   gc.collect()
 
@@ -943,7 +911,6 @@ def fire():
   portfolio_cnt = 0
   portfolio_reload = 24
   leisure_time = False
-  macd_w_is_fall = dict(_macd_w_is_fall)
   kf_signals = dict(_kf_signals)
   quant_ref = dict(_quant_ref)
   taiex_sentiment = dict(_taiex_sentiment)
@@ -1077,18 +1044,15 @@ def fire():
         print(portfolio)
         print('--------------------------------------------------------------------------------')
 
-    macd_w_is_fall = {}
     kf_signals = {}
     for p in portfolio:
       if '&' in p[IDX_T]:          # Futures (e.g. WTX&) have no query1 daily history
         if reset_portfolio == True:
-          p.extend([None]*9)
+          p.extend([None]*10)
         print(f'{p[IDX_T]}: skip MA calculation (futures)', file=sys.stdout)
         continue
-      ma, is_fall, kf_sig = ma_calculation(p, session, return_indicators=True)
+      ma, kf_sig = ma_calculation(p, session, return_indicators=True)
       #ma = ema_calculation(p, session)
-      macd_w_is_fall[p[IDX_T]] = is_fall
-      macd_w_is_fall[p[IDX_T].upper()] = is_fall
       if kf_sig:
         kf_signals[p[IDX_T]] = kf_sig
         kf_signals[p[IDX_T].upper()] = kf_sig
@@ -1099,12 +1063,9 @@ def fire():
 
       print(p)
 
-    print("\nMACD Hist (W) fall check (calculated)")
-    print(macd_w_is_fall)
     print("\nKalman Filter zero-crossing check (calculated)")
     print(kf_signals)
 
-    _macd_w_is_fall = dict(macd_w_is_fall)
     _kf_signals = dict(kf_signals)
     quant_ref = dict(_quant_ref)
 
@@ -1294,7 +1255,14 @@ def fire():
           portfolio[port_idx][IDX_P] = price  # To append curent price (new list item)
 
         if msg != '':
-            # Check if SMA cross (today vs. yesterday)
+          asset_cls = _classify_signal_asset(s, symbol_name)
+          is_tw_stock = (asset_cls == 'tw_stock')
+          is_us_stock = (asset_cls == 'us_stock')
+          is_unlev_etf = (asset_cls == 'index_etf')
+          is_lev_etf = (asset_cls == 'index_etf_lev')
+          is_individual_stock = is_tw_stock or is_us_stock
+
+          # Check if SMA cross (today vs. yesterday)
           ma10 = portfolio[port_idx][IDX_10MA]
           ma20 = portfolio[port_idx][IDX_20MA]
           ma60 = portfolio[port_idx][IDX_60MA]
@@ -1326,10 +1294,6 @@ def fire():
             if (price < ma10) and (price_1 >= ma10_1):
               msg += f' {l_c_d}<b>MA10={ma10:.{precision}f}</b>'
 
-              if portfolio[port_idx][IDX_T] in macd_w_is_fall:
-                if macd_w_is_fall[portfolio[port_idx][IDX_T]] == True:  # SMA10 cross and weekly MACD is fall
-                  msg += ' <b>[MACD Fall]</b>'
-
           if ma20_1 is not None:
             if (price > ma20) and (price_1 <= ma20_1):
               msg += f' {l_c_u}<b>MA20={ma20:.{precision}f}</b>'
@@ -1341,13 +1305,13 @@ def fire():
           if ma60_1 is not None:
             if (price > ma60) and (price_1 <= ma60_1):
               msg += f' {l_c_u}<b>MA60={ma60:.{precision}f}</b>'
-            if (price < ma60) and (price_1 >= ma60_1):
+            if (not (is_unlev_etf or is_lev_etf)) and (price < ma60) and (price_1 >= ma60_1):
               msg += f' {l_c_d}<b>MA60={ma60:.{precision}f}</b>'
 
           if ma200_1 is not None:
-            if (price > ma200) and (price_1 <= ma200_1):
+            if (not is_unlev_etf) and (price > ma200) and (price_1 <= ma200_1):
               msg += f' {l_c_u}<b>MA200={ma200:.{precision}f}</b>'
-            if (price < ma200) and (price_1 >= ma200_1):
+            if (not is_lev_etf) and (price < ma200) and (price_1 >= ma200_1):
               msg += f' {l_c_d}<b>MA200={ma200:.{precision}f}</b>'
 
           # SMA cross
@@ -1367,7 +1331,7 @@ def fire():
             if (ma20 < ma60) and (ma20_1 >= ma60_1):
               msg += f' {l_c_d}<b>MA2060={ma20:.{precision}f},{ma60:.{precision}f}</b>'
 
-          # Kalman Filter Zero-crossing & Trend Exhaustion
+          # Kalman Filter Zero-crossing (僅保留多轉空)
           ticker_kf = portfolio[port_idx][IDX_T]
           if ticker_kf in kf_signals and kf_signals[ticker_kf]:
             msg += f' <b>{kf_signals[ticker_kf]}</b>'
@@ -1390,36 +1354,26 @@ def fire():
               clv_now = (price - l_now) / rng_now if rng_now > 1e-6 else 0.5
               atr20 = q["atr20"]
 
-              # (1) [NR7-BRK] 昨日 NR7/孕線極度壓縮，今日突破/破底
-              if q["nr7_ref_h"] is not None and rng_now > 0:
+              # (1) [NR7-BRK] 昨日 NR7/孕線極度壓縮，今日向上突破 (限個股；破底已停用)
+              if is_individual_stock and q["nr7_ref_h"] is not None and rng_now > 0:
                 if price > q["nr7_ref_h"] and clv_now >= 0.70:
                   msg += ' <b>[↗NR7突破]</b>'
-                elif price < q["nr7_ref_l"] and clv_now <= 0.30:
-                  msg += ' <b>[↘NR7破底]</b>'
 
-              # (2) [SWEEP-2B] 20日區間流動性掃蕩 (破底翻 / 假突破)
-              if l_now < q["swing_low_20"] and price > q["swing_low_20"] and clv_now >= 0.65 and price > o_now:
-                msg += ' <b>[↗2B破底翻]</b>'
-              elif h_now > q["swing_high_20"] and price < q["swing_high_20"] and clv_now <= 0.35 and price < o_now:
-                msg += ' <b>[↘2B假突破]</b>'
-
-              # (3) [GAP-GO] 跳空不補強勢動能
+              # (2) [GAP-GO] 跳空不補強勢動能 (向上限個股+原型ETF；向下限台股個股)
               if atr20 > 0:
-                if (o_now - q["prev_h"]) >= 0.3 * atr20 and l_now >= q["prev_h"] and price > o_now and clv_now >= 0.65:
+                if (is_individual_stock or is_unlev_etf) and (o_now - q["prev_h"]) >= 0.3 * atr20 and l_now >= q["prev_h"] and price > o_now and clv_now >= 0.65:
                   msg += ' <b>[↗跳空不補]</b>'
-                elif (q["prev_l"] - o_now) >= 0.3 * atr20 and h_now <= q["prev_l"] and price < o_now and clv_now <= 0.35:
+                elif is_tw_stock and (q["prev_l"] - o_now) >= 0.3 * atr20 and h_now <= q["prev_l"] and price < o_now and clv_now <= 0.35:
                   msg += ' <b>[↘跳空破位]</b>'
 
-              # (4) [ATR-Z] 極端波動率乖離耗竭
-              if ma20 is not None and atr20 > 0:
+              # (3) [ATR-Z] 極端波動率超跌反彈 (僅限美股個股與槓桿ETF；超買賣飛已停用)
+              if (is_us_stock or is_lev_etf) and ma20 is not None and atr20 > 0:
                 atr_z = (price - ma20) / atr20
                 if atr_z <= -2.5 and price >= o_now and clv_now >= 0.50:
                   msg += f' <b>[↗超跌反彈(Z={atr_z:.1f})]</b>'
-                elif atr_z >= 3.0 and price <= o_now and clv_now <= 0.50:
-                  msg += f' <b>[↘過熱鈍化(Z={atr_z:.1f})]</b>'
 
-            # (5) [VCP] 口袋支點 (僅在整點/收盤全報表 portfolio_cnt == 0 時附掛)
-            if portfolio_cnt == 0 and q_pair.get("vcp_pivot"):
+            # (4) [VCP] 口袋支點 (僅限台股個股於整點/收盤全報表 portfolio_cnt == 0 時附掛)
+            if portfolio_cnt == 0 and is_tw_stock and q_pair.get("vcp_pivot"):
               msg += ' <b>[VCP口袋支點]</b>'
 
           # Add chart
